@@ -220,13 +220,13 @@ function renderList() {
       if (incident.id === state.selectedId) tr.classList.add("selected");
       const categoryLabels = (incident.incident_categories || []).map((c) => CATEGORY_LABELS[c] || c).join(", ");
       tr.innerHTML = `
-        <td>
+        <td data-label="Incident">
           <span class="row-title">${escapeHtml(incident.site_location)}</span>
           <span class="row-sub">${escapeHtml(categoryLabels || incident.incident_type_summary || "—")}</span>
         </td>
-        <td><span class="badge badge-nature-${incident.nature_of_report}">${humanize(incident.nature_of_report)}</span></td>
-        <td><span class="badge badge-status-${incident.status}">${humanize(incident.status)}</span></td>
-        <td>${formatDate(incident.created_at)}</td>
+        <td data-label="Nature"><span class="badge badge-nature-${incident.nature_of_report}">${humanize(incident.nature_of_report)}</span></td>
+        <td data-label="Status"><span class="badge badge-status-${incident.status}">${humanize(incident.status)}</span></td>
+        <td data-label="Reported">${formatDate(incident.created_at)}</td>
       `;
       tr.addEventListener("click", () => selectIncident(incident.id));
       tbody.appendChild(tr);
@@ -378,13 +378,13 @@ function renderDetail(incident) {
     persons.forEach((p) => {
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td>${escapeHtml(p.name)}</td>
-        <td>${escapeHtml(p.designation)}</td>
-        <td>${escapeHtml(p.company)}</td>
-        <td>${escapeHtml(p.id_number)}</td>
-        <td>${escapeHtml(p.nationality)}</td>
-        <td>${escapeHtml(p.contact_no)}</td>
-        <td>${escapeHtml(p.gender)}</td>
+        <td data-label="Name">${escapeHtml(p.name)}</td>
+        <td data-label="Role">${escapeHtml(p.designation)}</td>
+        <td data-label="Company">${escapeHtml(p.company)}</td>
+        <td data-label="ID / Labour card">${escapeHtml(p.id_number)}</td>
+        <td data-label="Nationality">${escapeHtml(p.nationality)}</td>
+        <td data-label="Contact">${escapeHtml(p.contact_no)}</td>
+        <td data-label="Gender">${escapeHtml(p.gender)}</td>
       `;
       personsBody.appendChild(tr);
     });
@@ -860,10 +860,10 @@ function renderAnalytics(data) {
     data.repeat_involved_persons.forEach((p) => {
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td>${escapeHtml(p.name)}</td>
-        <td>${escapeHtml(p.id_number) || "—"}</td>
-        <td><span class="repeat-count-badge">${p.count}×</span></td>
-        <td>${escapeHtml(p.last_seen) || "—"}</td>
+        <td data-label="Name">${escapeHtml(p.name)}</td>
+        <td data-label="ID / labour card">${escapeHtml(p.id_number) || "—"}</td>
+        <td data-label="Occurrences"><span class="repeat-count-badge">${p.count}×</span></td>
+        <td data-label="Last seen">${escapeHtml(p.last_seen) || "—"}</td>
       `;
       peopleBody.appendChild(tr);
     });
@@ -877,9 +877,9 @@ function renderAnalytics(data) {
     data.repeat_site_category_patterns.forEach((p) => {
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td>${escapeHtml(p.site_location)}</td>
-        <td>${escapeHtml(CATEGORY_LABELS[p.category] || humanize(p.category))}</td>
-        <td><span class="repeat-count-badge">${p.count}×</span></td>
+        <td data-label="Site / location">${escapeHtml(p.site_location)}</td>
+        <td data-label="Incident type">${escapeHtml(CATEGORY_LABELS[p.category] || humanize(p.category))}</td>
+        <td data-label="Occurrences"><span class="repeat-count-badge">${p.count}×</span></td>
       `;
       patternsBody.appendChild(tr);
     });

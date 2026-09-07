@@ -125,6 +125,82 @@ body {
   }
 }
 
+/* ---------- responsive tables ----------
+   Below 640px a data-table becomes a stack of labeled rows instead of
+   shrinking columns into unreadable slivers or forcing sideways scroll.
+   Requires each <td> to carry a data-label attribute (set in app.js). */
+@media (max-width: 640px) {
+  .responsive-table,
+  .responsive-table thead,
+  .responsive-table tbody,
+  .responsive-table tr,
+  .responsive-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .responsive-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
+
+  .responsive-table tr {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.5rem 0.65rem;
+    margin-bottom: 0.6rem;
+  }
+
+  .responsive-table tr:last-child {
+    margin-bottom: 0;
+  }
+
+  .responsive-table td {
+    border-bottom: none !important;
+    padding: 0.3rem 0 !important;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.75rem;
+  }
+
+  .responsive-table td > * {
+    text-align: right;
+  }
+
+  .responsive-table td::before {
+    content: attr(data-label);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--text-faint);
+    text-align: left;
+    flex-shrink: 0;
+  }
+
+  /* The "Incident" cell holds a two-line title+description block, not a
+     single short value — read better left-aligned and full width. */
+  .responsive-table td[data-label="Incident"] {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.15rem;
+  }
+
+  .responsive-table td[data-label="Incident"] > * {
+    text-align: left;
+  }
+
+  #incident-table tr {
+    cursor: pointer;
+  }
+}
+
 .panel {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -472,7 +548,7 @@ h3.section-title:first-of-type {
 
 .approvals-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
   gap: 0.7rem;
 }
 
@@ -666,7 +742,9 @@ label {
 
 .checkbox-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  /* min(…, 100%) keeps a column from forcing horizontal overflow on a
+     viewport narrower than the nominal minimum (e.g. a small phone). */
+  grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr));
   gap: 0.4rem 0.75rem;
   margin-bottom: 0.75rem;
 }
@@ -703,6 +781,15 @@ label {
 @media (max-width: 900px) {
   .person-row {
     grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 520px) {
+  .person-row {
+    grid-template-columns: 1fr;
+  }
+  .remove-row-btn {
+    width: 100%;
   }
 }
 
@@ -815,7 +902,7 @@ label {
 
 .stat-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr));
   gap: 0.75rem;
   margin-bottom: 1.25rem;
 }
@@ -846,7 +933,7 @@ label {
 
 .analytics-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
   gap: 1rem;
   margin-bottom: 1rem;
 }
@@ -863,10 +950,14 @@ label {
   gap: 0.5rem;
   height: 140px;
   padding-top: 0.5rem;
+  /* A long date range (e.g. 12 months) can need more width than a phone
+     screen has; scroll the chart itself rather than the page. */
+  overflow-x: auto;
 }
 
 .trend-bar-wrap {
   flex: 1;
+  min-width: 32px;
   display: flex;
   flex-direction: column;
   align-items: center;

@@ -42,7 +42,7 @@
         <div id="list-loading" class="hint">Loading…</div>
         <div id="list-empty" class="hint" hidden>No incidents match these filters.</div>
 
-        <table class="incident-table" id="incident-table" hidden>
+        <table class="incident-table responsive-table" id="incident-table" hidden>
           <thead>
             <tr>
               <th>Site / Incident</th>
@@ -89,7 +89,7 @@
 
           <h3 class="section-title">Involved person(s)</h3>
           <div id="d-persons-wrap">
-            <table class="persons-table" id="d-persons-table">
+            <table class="persons-table responsive-table" id="d-persons-table">
               <thead>
                 <tr><th>Name</th><th>Role</th><th>Company</th><th>ID / Labour card</th><th>Nationality</th><th>Contact</th><th>Gender</th></tr>
               </thead>
@@ -361,7 +361,7 @@
       <h3>People appearing in more than one incident</h3>
       <p class="section-hint" style="margin:-0.5rem 0 0.8rem;">Matched by name + ID/labour card when available, within the selected date range.</p>
       <div id="an-repeat-people-wrap">
-        <table class="stats-table" id="an-repeat-people-table">
+        <table class="stats-table responsive-table" id="an-repeat-people-table">
           <thead><tr><th>Name</th><th>ID / labour card</th><th>Occurrences</th><th>Last seen</th></tr></thead>
           <tbody id="an-repeat-people-rows"></tbody>
         </table>
@@ -372,7 +372,7 @@
       <h3>Recurring incident patterns</h3>
       <p class="section-hint" style="margin:-0.5rem 0 0.8rem;">Same site and incident type recurring more than once in the selected range.</p>
       <div id="an-repeat-patterns-wrap">
-        <table class="stats-table" id="an-repeat-patterns-table">
+        <table class="stats-table responsive-table" id="an-repeat-patterns-table">
           <thead><tr><th>Site / location</th><th>Incident type</th><th>Occurrences</th></tr></thead>
           <tbody id="an-repeat-patterns-rows"></tbody>
         </table>
