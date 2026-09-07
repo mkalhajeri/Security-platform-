@@ -122,6 +122,15 @@ class ApprovalSignOff(BaseModel):
     position: str | None = Field(default=None, max_length=200)
     signed_date: date | None = None
     signature: str | None = Field(default=None, max_length=200, description="Typed signature")
+    signature_image: str | None = Field(
+        default=None,
+        max_length=300_000,
+        description=(
+            "Hand-drawn signature as a base64 PNG data URI (data:image/png;base64,...). "
+            "Not yet tied to a reusable per-person signature library — that needs real "
+            "user accounts first — so each sign-off is drawn fresh."
+        ),
+    )
 
 
 class TimelineEntry(BaseModel):

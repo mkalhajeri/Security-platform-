@@ -13,6 +13,7 @@
     <nav class="tabs">
       <button class="tab-btn active" id="tab-queue" type="button">Incident Queue</button>
       <button class="tab-btn" id="tab-new" type="button">+ New Report</button>
+      <button class="tab-btn" id="tab-analytics" type="button">Analytics</button>
     </nav>
     <a class="docs-link" href="/docs" target="_blank" rel="noopener">API docs</a>
   </header>
@@ -289,10 +290,12 @@
           <label>Date
             <input id="ni-prepared-date" type="date" />
           </label>
-          <label>Signature (typed)
+          <label>Signature (typed, optional)
             <input id="ni-prepared-signature" type="text" maxlength="200" />
           </label>
         </div>
+        <button type="button" class="btn btn-sm" id="ni-prepared-sign-btn">✎ Draw signature</button>
+        <img id="ni-prepared-signature-preview" class="signature-preview" hidden alt="Prepared-by signature preview" />
       </div>
 
       <div class="form-actions">
@@ -301,6 +304,117 @@
       </div>
     </form>
   </main>
+
+  <!-- ============================= ANALYTICS VIEW ============================= -->
+  <main class="view" id="view-analytics" hidden>
+    <div class="analytics-filters">
+      <div class="field-inline">
+        <label class="small-label" for="an-period">Group by</label>
+        <select id="an-period">
+          <option value="month">Month</option>
+          <option value="quarter">Quarter</option>
+          <option value="year">Year</option>
+        </select>
+      </div>
+      <div class="field-inline">
+        <label class="small-label" for="an-from">From</label>
+        <input type="date" id="an-from" />
+      </div>
+      <div class="field-inline">
+        <label class="small-label" for="an-to">To</label>
+        <input type="date" id="an-to" />
+      </div>
+      <button class="btn btn-secondary" id="an-refresh-btn" style="align-self:end;">Refresh</button>
+    </div>
+
+    <div class="stat-cards" id="an-stat-cards"></div>
+
+    <div class="analytics-grid">
+      <section class="panel analytics-panel">
+        <h3>Incident volume over time</h3>
+        <div class="trend-chart" id="an-trend-chart"></div>
+      </section>
+      <section class="panel analytics-panel">
+        <h3>By type of incident</h3>
+        <div class="bar-list" id="an-category-bars"></div>
+      </section>
+      <section class="panel analytics-panel">
+        <h3>By nature of report</h3>
+        <div class="bar-list" id="an-nature-bars"></div>
+      </section>
+      <section class="panel analytics-panel">
+        <h3>Top sites / locations</h3>
+        <div class="bar-list" id="an-site-bars"></div>
+      </section>
+      <section class="panel analytics-panel">
+        <h3>Most active reporters</h3>
+        <div class="bar-list" id="an-reporter-bars"></div>
+      </section>
+      <section class="panel analytics-panel">
+        <h3>Reviewers &amp; approvers</h3>
+        <div class="bar-list" id="an-reviewer-bars"></div>
+        <div class="bar-list" id="an-approver-bars" style="margin-top:0.9rem;"></div>
+      </section>
+    </div>
+
+    <section class="panel analytics-panel" style="margin-bottom:1rem;">
+      <h3>People appearing in more than one incident</h3>
+      <p class="section-hint" style="margin:-0.5rem 0 0.8rem;">Matched by name + ID/labour card when available, within the selected date range.</p>
+      <div id="an-repeat-people-wrap">
+        <table class="stats-table" id="an-repeat-people-table">
+          <thead><tr><th>Name</th><th>ID / labour card</th><th>Occurrences</th><th>Last seen</th></tr></thead>
+          <tbody id="an-repeat-people-rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel analytics-panel">
+      <h3>Recurring incident patterns</h3>
+      <p class="section-hint" style="margin:-0.5rem 0 0.8rem;">Same site and incident type recurring more than once in the selected range.</p>
+      <div id="an-repeat-patterns-wrap">
+        <table class="stats-table" id="an-repeat-patterns-table">
+          <thead><tr><th>Site / location</th><th>Incident type</th><th>Occurrences</th></tr></thead>
+          <tbody id="an-repeat-patterns-rows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <!-- ============================= SIGNATURE MODAL ============================= -->
+  <div class="modal-overlay" id="signature-modal" hidden>
+    <div class="modal-card">
+      <h2 id="signature-modal-title">Sign</h2>
+      <p class="section-hint">Draw your signature below, or leave it blank and just type your name.</p>
+
+      <label>Name
+        <input type="text" id="sig-name" maxlength="200" />
+      </label>
+      <div class="form-row">
+        <label>Position
+          <input type="text" id="sig-position" maxlength="200" />
+        </label>
+        <label>Date
+          <input type="date" id="sig-date" />
+        </label>
+      </div>
+      <label>Typed signature (optional, used if nothing is drawn)
+        <input type="text" id="sig-typed" maxlength="200" />
+      </label>
+
+      <div class="signature-pad-wrap">
+        <canvas id="signature-canvas"></canvas>
+        <p class="signature-baseline-hint">Draw with mouse, stylus, or finger</p>
+      </div>
+      <div class="signature-pad-actions">
+        <button type="button" class="btn btn-sm" id="sig-clear-btn">Clear drawing</button>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" id="sig-cancel-btn">Cancel</button>
+        <button type="button" class="btn btn-primary" id="sig-save-btn">Save signature</button>
+      </div>
+    </div>
+  </div>
 
   <script src="/app.js"></script>
 </body>

@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.database import close_mongo_connection, connect_to_mongo
-from app.routers import health, incidents
+from app.routers import analytics, health, incidents
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -44,6 +44,7 @@ app.add_middleware(
 
 app.include_router(health.router)
 app.include_router(incidents.router)
+app.include_router(analytics.router)
 
 
 @app.get("/api/info")

@@ -1,4 +1,5 @@
-import pytest
+from tests.conftest import create_incident as _create_incident
+from tests.conftest import incident_payload as _incident_payload
 
 
 async def test_root_serves_ui(client):
@@ -12,51 +13,6 @@ async def test_api_info(client):
     resp = await client.get("/api/info")
     assert resp.status_code == 200
     assert "name" in resp.json()
-
-
-def _incident_payload(**overrides):
-    payload = {
-        "site_location": "Warehouse 3 — Jebel Ali",
-        "department_area": "Loading Bay",
-        "report_date": "2026-09-07",
-        "report_time": "14:30",
-        "reported_by": "Ahmed Al-Farsi",
-        "reported_by_job_title": "Security Officer",
-        "reported_by_id_no": "SEC-0042",
-        "reported_via": "phone_call",
-        "nature_of_report": "security",
-        "involved_persons": [
-            {
-                "name": "John Mensah",
-                "designation": "Forklift Operator",
-                "company": "ACME Logistics",
-                "id_number": "784-1990-1234567-1",
-                "nationality": "Ghanaian",
-                "contact_no": "+971-50-1234567",
-                "gender": "M",
-            }
-        ],
-        "witnesses": "Fatima Noor (Dock Supervisor)",
-        "exact_location": "Loading Bay 3, near dock door 7",
-        "incident_date": "2026-09-07",
-        "incident_time": "14:10",
-        "incident_categories": ["theft", "security_breach"],
-        "incident_background": "A pallet of electronics went missing between the 13:00 and 14:00 stock checks.",
-        "immediate_action_taken": "CCTV footage pulled; access logs reviewed; site supervisor notified.",
-        "supporting_documents": ["cctv_footage"],
-        "prepared_by": {
-            "name": "Ahmed Al-Farsi",
-            "position": "Security Officer",
-            "signed_date": "2026-09-07",
-            "signature": "A. Al-Farsi",
-        },
-    }
-    payload.update(overrides)
-    return payload
-
-
-async def _create_incident(client, **overrides):
-    return await client.post("/incidents", json=_incident_payload(**overrides))
 
 
 async def test_create_incident(client):

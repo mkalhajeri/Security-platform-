@@ -27,13 +27,15 @@ app/
   routers/
     health.py         GET /health
     incidents.py       Incident CRUD, timeline, and attachment endpoints
+    analytics.py       Statistics: volume trends, top people, repeat patterns
   static/
-    index.html        UI layout (incident queue + the multi-section report form)
-    styles.css        UI styling
-    app.js            UI logic (fetches the /incidents API)
+    index.html        UI layout (incident queue, new-report form, analytics, signature modal)
+    styles.css        UI styling (light theme)
+    app.js            UI logic (fetches the /incidents and /analytics APIs)
 tests/
-  conftest.py         Test fixtures (mocked MongoDB, HTTP test client)
+  conftest.py         Test fixtures (mocked MongoDB, HTTP test client, shared incident payload)
   test_incidents.py   API tests covering incidents and attachments
+  test_analytics.py   API tests covering the statistics endpoint
 ```
 
 ## Getting started
@@ -102,7 +104,7 @@ Stored in the `incidents` collection. Section numbers refer to the paper
 | 5–8, 10. Narrative | `incident_background`, `immediate_action_taken`, `root_cause`, `recommendations`, `local_authorities_involvement` | Free text |
 | 9. Incident Pictures | `incident_pictures`: list of attachment metadata `{id, filename, content_type, size, description, uploaded_at}` | Files uploaded separately, see below |
 | 11. Supporting Documents | `supporting_documents`: list of 8 document types (photos, CCTV footage, police report, …) + `supporting_documents_other`; `supporting_document_files`: uploaded file metadata | |
-| 12. Approvals | `prepared_by`, `reviewed_by`, `approved_by`: each `{name, position, signed_date, signature}` | Typed signature, not e-signature |
+| 12. Approvals | `prepared_by`, `reviewed_by`, `approved_by`: each `{name, position, signed_date, signature, signature_image}` | `signature` is typed text; `signature_image` is a hand-drawn signature captured on a canvas pad, stored as a base64 PNG data URI (max 300 KB). Not yet tied to a reusable per-person signature library — that needs real user accounts first, see Roadmap — so each sign-off is drawn fresh. |
 | — | `timeline`: list of `{timestamp, actor, action, note}` | Auto-appended on creation, status changes, sign-offs, and attachment changes; can also be appended to manually |
 | — | `created_at` / `updated_at` (UTC) | Managed by the API |
 
@@ -122,6 +124,7 @@ Stored in the `incidents` collection. Section numbers refer to the paper
 | POST | `/incidents/{id}/attachments?kind=picture\|document` | Upload a file (multipart/form-data, field `file`, optional `description`); max 8 MB |
 | GET | `/incidents/{id}/attachments/{attachment_id}` | Download/view a file |
 | DELETE | `/incidents/{id}/attachments/{attachment_id}` | Remove a file |
+| GET | `/analytics` | Statistics: volume trend, breakdowns, top people, repeat patterns (see below) |
 
 ### Example: report an incident
 
@@ -153,12 +156,45 @@ curl -X POST "http://localhost:8000/incidents/<id>/attachments?kind=picture" \
   -F "description=Dock door 7, wide angle"
 ```
 
+## Analytics
+
+`GET /analytics` answers the questions a paper log can't: is the same
+person or the same kind of incident showing up repeatedly, and how does
+volume trend over time?
+
+Query params: `period` (`month` \| `quarter` \| `year`, default `month`) controls
+how the trend is bucketed; `from_date` / `to_date` (`YYYY-MM-DD`, inclusive)
+filter by `incident_date`; `top_n` (default 10) caps the ranked lists.
+
+```bash
+curl "http://localhost:8000/analytics?period=quarter&from_date=2026-01-01"
+```
+
+Returns:
+- `total_incidents`, `status_breakdown`, `nature_breakdown`, `category_breakdown`
+- `trend`: incident counts bucketed by month/quarter/year
+- `top_sites`, `top_reporters`, `top_reviewers`, `top_approvers`: ranked counts
+- `repeat_involved_persons`: anyone named in Section 2 of more than one
+  incident (matched by name + ID/labour card when available), with a count
+  and the date they last appeared
+- `repeat_site_category_patterns`: `(site, incident type)` pairs that
+  recur more than once — a flag for "this keeps happening at this location"
+
+This is computed in Python over a lean field projection rather than a
+MongoDB aggregation pipeline, since incident dates are stored as bare ISO
+strings (see `app/routers/incidents.py`'s `_json_safe`) — see
+`app/routers/analytics.py` for the tradeoff and when to revisit it.
+The web UI's **Analytics** tab renders all of this as stat cards, a trend
+chart, ranked bar lists, and two tables highlighting repeat people and
+repeat patterns.
+
 ## Roadmap
 
 Incident reporting + storage (matching the paper form), file attachments,
-a Docker-based local setup, and a web UI are done. Natural next steps:
+drawn signature capture, a statistics/analytics layer, a Docker-based
+local setup, and a web UI are done. Natural next steps:
 
-- Authentication & authorization (tie incidents/sign-offs to real accounts, restrict who can update/delete/approve)
+- **Authentication & authorization** — needed for: tying incidents/sign-offs to real accounts, restricting who can update/delete/approve, and a reusable per-person signature library (save a signature once, reuse it on future sign-offs instead of drawing it fresh each time)
 - Notifications/webhooks on new reports or status changes
 - Reporting/export (e.g. generate a PDF matching the original paper layout from a stored incident)
 - Additional platform modules (patrol logs, access control, asset inventory) sharing the same database

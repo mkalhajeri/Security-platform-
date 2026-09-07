@@ -161,11 +161,13 @@ function escapeHtml(str) {
 // ---------------------------------------------------------------------
 
 function showTab(tab) {
-  const isQueue = tab === "queue";
-  el("view-queue").hidden = !isQueue;
-  el("view-new").hidden = isQueue;
-  el("tab-queue").classList.toggle("active", isQueue);
-  el("tab-new").classList.toggle("active", !isQueue);
+  el("view-queue").hidden = tab !== "queue";
+  el("view-new").hidden = tab !== "new";
+  el("view-analytics").hidden = tab !== "analytics";
+  el("tab-queue").classList.toggle("active", tab === "queue");
+  el("tab-new").classList.toggle("active", tab === "new");
+  el("tab-analytics").classList.toggle("active", tab === "analytics");
+  if (tab === "analytics") loadAnalytics();
 }
 
 // ---------------------------------------------------------------------
@@ -281,54 +283,47 @@ function renderApprovals(incident) {
     card.className = "approval-card";
     card.innerHTML = `
       <h4>${label} (${roleLabel})</h4>
-      <dl id="ao-${field}-view" ${value ? "" : "hidden"}>
+      <dl ${value ? "" : "hidden"}>
         <div><dt>Name</dt><dd>${escapeHtml(value && value.name)}</dd></div>
         <div><dt>Position</dt><dd>${escapeHtml(value && value.position)}</dd></div>
         <div><dt>Date</dt><dd>${escapeHtml(value && value.signed_date)}</dd></div>
-        <div><dt>Signature</dt><dd>${escapeHtml(value && value.signature)}</dd></div>
+        ${value && !value.signature_image ? `<div><dt>Signature</dt><dd>${escapeHtml(value.signature)}</dd></div>` : ""}
       </dl>
-      <p class="hint" id="ao-${field}-empty" ${value ? "hidden" : ""}>Not yet signed.</p>
-      <button type="button" class="btn btn-sm" data-toggle-approval="${field}">${value ? "Edit" : "Sign"}</button>
-      <div class="approval-form" id="ao-${field}-form">
-        <input type="text" placeholder="Name" id="ao-${field}-name" value="${escapeHtml(value && value.name)}">
-        <input type="text" placeholder="Position" id="ao-${field}-position" value="${escapeHtml(value && value.position)}">
-        <input type="date" id="ao-${field}-date" value="${(value && value.signed_date) || todayIso()}">
-        <input type="text" placeholder="Typed signature" id="ao-${field}-signature" value="${escapeHtml(value && value.signature)}">
-        <button type="button" class="btn btn-secondary btn-sm" data-save-approval="${field}">Save</button>
+      ${value && value.signature_image ? `<img class="signature-preview" src="${value.signature_image}" alt="${label} signature">` : ""}
+      <p class="hint" ${value ? "hidden" : ""}>Not yet signed.</p>
+      <div style="margin-top:0.5rem;">
+        <button type="button" class="btn btn-sm" data-sign="${field}">${value ? "Edit sign-off" : "Sign"}</button>
       </div>
     `;
     grid.appendChild(card);
   }
 
-  grid.querySelectorAll("[data-toggle-approval]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const field = btn.dataset.toggleApproval;
-      el(`ao-${field}-form`).classList.toggle("open");
-    });
-  });
-  grid.querySelectorAll("[data-save-approval]").forEach((btn) => {
-    btn.addEventListener("click", () => saveApproval(btn.dataset.saveApproval));
+  grid.querySelectorAll("[data-sign]").forEach((btn) => {
+    btn.addEventListener("click", () => openApprovalSignature(btn.dataset.sign));
   });
 }
 
-async function saveApproval(field) {
-  const incident = state.selectedId ? currentIncident : null;
+function openApprovalSignature(field) {
+  const incident = currentIncident;
   if (!incident) return;
-  const payload = {
-    [field]: {
-      name: el(`ao-${field}-name`).value.trim() || null,
-      position: el(`ao-${field}-position`).value.trim() || null,
-      signed_date: el(`ao-${field}-date`).value || null,
-      signature: el(`ao-${field}-signature`).value.trim() || null,
+  const [, label, roleLabel] = APPROVAL_FIELDS.find(([f]) => f === field);
+  const existing = incident[field] || {};
+  openSignatureModal({
+    title: `${label} (${roleLabel})`,
+    initial: existing,
+    onSave: async (result) => {
+      try {
+        const updated = await apiJson(`/incidents/${incident.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ [field]: result }),
+        });
+        renderDetail(updated);
+        showToast("Sign-off saved.");
+      } catch (err) {
+        showToast(`Failed to save: ${err.message}`, true);
+      }
     },
-  };
-  try {
-    const updated = await apiJson(`/incidents/${incident.id}`, { method: "PATCH", body: JSON.stringify(payload) });
-    renderDetail(updated);
-    showToast("Sign-off saved.");
-  } catch (err) {
-    showToast(`Failed to save: ${err.message}`, true);
-  }
+  });
 }
 
 let currentIncident = null;
@@ -524,6 +519,106 @@ async function deleteAttachment(incidentId, attachmentId) {
 }
 
 // ---------------------------------------------------------------------
+// Signature pad (canvas drawing, used by both approvals and the new-report
+// "prepared by" section). No persistent per-person signature library yet —
+// that needs real user accounts — so each sign-off is captured fresh.
+// ---------------------------------------------------------------------
+
+const sigPad = {
+  canvas: null,
+  ctx: null,
+  drawing: false,
+  hasContent: false,
+  onSave: null,
+};
+
+function sigCanvasPoint(evt) {
+  const rect = sigPad.canvas.getBoundingClientRect();
+  const scaleX = sigPad.canvas.width / rect.width;
+  const scaleY = sigPad.canvas.height / rect.height;
+  return { x: (evt.clientX - rect.left) * scaleX, y: (evt.clientY - rect.top) * scaleY };
+}
+
+function sigClear() {
+  const { ctx, canvas } = sigPad;
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  sigPad.hasContent = false;
+}
+
+function initSignaturePad() {
+  const canvas = el("signature-canvas");
+  canvas.width = 600;
+  canvas.height = 180;
+  sigPad.canvas = canvas;
+  sigPad.ctx = canvas.getContext("2d");
+  sigPad.ctx.lineWidth = 2.5;
+  sigPad.ctx.lineCap = "round";
+  sigPad.ctx.strokeStyle = "#1c2029";
+  sigClear();
+
+  canvas.addEventListener("pointerdown", (e) => {
+    sigPad.drawing = true;
+    sigPad.hasContent = true;
+    const p = sigCanvasPoint(e);
+    sigPad.ctx.beginPath();
+    sigPad.ctx.moveTo(p.x, p.y);
+    canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (!sigPad.drawing) return;
+    const p = sigCanvasPoint(e);
+    sigPad.ctx.lineTo(p.x, p.y);
+    sigPad.ctx.stroke();
+  });
+  const stop = () => { sigPad.drawing = false; };
+  canvas.addEventListener("pointerup", stop);
+  canvas.addEventListener("pointerleave", stop);
+
+  el("sig-clear-btn").addEventListener("click", sigClear);
+  el("sig-cancel-btn").addEventListener("click", closeSignatureModal);
+  el("sig-save-btn").addEventListener("click", () => {
+    const result = {
+      name: el("sig-name").value.trim() || null,
+      position: el("sig-position").value.trim() || null,
+      signed_date: el("sig-date").value || null,
+      signature: el("sig-typed").value.trim() || null,
+      signature_image: sigPad.hasContent ? canvas.toDataURL("image/png") : null,
+    };
+    const callback = sigPad.onSave;
+    closeSignatureModal();
+    if (callback) callback(result);
+  });
+}
+
+function openSignatureModal({ title, initial, onSave }) {
+  initial = initial || {};
+  el("signature-modal-title").textContent = title || "Sign";
+  el("sig-name").value = initial.name || "";
+  el("sig-position").value = initial.position || "";
+  el("sig-date").value = initial.signed_date || todayIso();
+  el("sig-typed").value = initial.signature || "";
+  sigPad.onSave = onSave;
+
+  sigClear();
+  if (initial.signature_image) {
+    const img = new Image();
+    img.onload = () => {
+      sigPad.ctx.drawImage(img, 0, 0, sigPad.canvas.width, sigPad.canvas.height);
+      sigPad.hasContent = true;
+    };
+    img.src = initial.signature_image;
+  }
+
+  el("signature-modal").hidden = false;
+}
+
+function closeSignatureModal() {
+  el("signature-modal").hidden = true;
+  sigPad.onSave = null;
+}
+
+// ---------------------------------------------------------------------
 // New report form
 // ---------------------------------------------------------------------
 
@@ -559,12 +654,44 @@ function collectPersonRows() {
     .filter((p) => p.name);
 }
 
+let niPreparedSignatureImage = null;
+
 function resetNewIncidentForm() {
   el("new-incident-form").reset();
   el("person-rows").innerHTML = "";
   state.personRowCount = 0;
   addPersonRow();
   el("ni-prepared-date").value = todayIso();
+  niPreparedSignatureImage = null;
+  el("ni-prepared-signature-preview").hidden = true;
+  el("ni-prepared-signature-preview").src = "";
+}
+
+function openPreparedSignaturePad() {
+  openSignatureModal({
+    title: "Prepared By signature",
+    initial: {
+      name: el("ni-prepared-name").value,
+      position: el("ni-prepared-position").value,
+      signed_date: el("ni-prepared-date").value,
+      signature: el("ni-prepared-signature").value,
+      signature_image: niPreparedSignatureImage,
+    },
+    onSave: (result) => {
+      el("ni-prepared-name").value = result.name || "";
+      el("ni-prepared-position").value = result.position || "";
+      if (result.signed_date) el("ni-prepared-date").value = result.signed_date;
+      el("ni-prepared-signature").value = result.signature || "";
+      niPreparedSignatureImage = result.signature_image;
+      const preview = el("ni-prepared-signature-preview");
+      if (niPreparedSignatureImage) {
+        preview.src = niPreparedSignatureImage;
+        preview.hidden = false;
+      } else {
+        preview.hidden = true;
+      }
+    },
+  });
 }
 
 async function submitNewIncident(evt) {
@@ -575,6 +702,7 @@ async function submitNewIncident(evt) {
     position: el("ni-prepared-position").value.trim(),
     signed_date: el("ni-prepared-date").value,
     signature: el("ni-prepared-signature").value.trim(),
+    signature_image: niPreparedSignatureImage,
   };
   const hasPrepared = Object.values(prepared).some(Boolean);
 
@@ -612,7 +740,13 @@ async function submitNewIncident(evt) {
     supporting_documents_other: el("ni-supporting-documents-other").value.trim() || null,
 
     prepared_by: hasPrepared
-      ? { name: prepared.name || null, position: prepared.position || null, signed_date: prepared.signed_date || null, signature: prepared.signature || null }
+      ? {
+          name: prepared.name || null,
+          position: prepared.position || null,
+          signed_date: prepared.signed_date || null,
+          signature: prepared.signature || null,
+          signature_image: prepared.signature_image || null,
+        }
       : null,
   };
 
@@ -626,6 +760,129 @@ async function submitNewIncident(evt) {
     selectIncident(created.id);
   } catch (err) {
     showToast(`Failed to report incident: ${err.message}`, true);
+  }
+}
+
+// ---------------------------------------------------------------------
+// Analytics
+// ---------------------------------------------------------------------
+
+function buildAnalyticsQuery() {
+  const params = new URLSearchParams();
+  params.set("period", el("an-period").value);
+  if (el("an-from").value) params.set("from_date", el("an-from").value);
+  if (el("an-to").value) params.set("to_date", el("an-to").value);
+  return params.toString();
+}
+
+async function loadAnalytics() {
+  try {
+    const data = await apiJson(`/analytics?${buildAnalyticsQuery()}`);
+    renderAnalytics(data);
+  } catch (err) {
+    showToast(`Failed to load analytics: ${err.message}`, true);
+  }
+}
+
+function renderStatCards(data) {
+  const byStatus = Object.fromEntries((data.status_breakdown || []).map((s) => [s.key, s.count]));
+  const cards = [
+    { label: "Total incidents", value: data.total_incidents, cls: "" },
+    { label: "Reported", value: byStatus.reported || 0, cls: "accent" },
+    { label: "Under review", value: byStatus.under_review || 0, cls: "" },
+    { label: "Closed", value: byStatus.closed || 0, cls: "" },
+    { label: "People appearing more than once", value: data.repeat_involved_persons.length, cls: "danger" },
+    { label: "Recurring site/type patterns", value: data.repeat_site_category_patterns.length, cls: "danger" },
+  ];
+  el("an-stat-cards").innerHTML = cards
+    .map((c) => `<div class="stat-card ${c.cls}"><div class="value">${c.value}</div><div class="label">${c.label}</div></div>`)
+    .join("");
+}
+
+function renderTrendChart(trend) {
+  const container = el("an-trend-chart");
+  container.innerHTML = "";
+  if (!trend.length) {
+    container.innerHTML = '<span class="hint">No incidents in this range.</span>';
+    return;
+  }
+  const max = Math.max(...trend.map((t) => t.count), 1);
+  trend.forEach((t) => {
+    const wrap = document.createElement("div");
+    wrap.className = "trend-bar-wrap";
+    const heightPct = Math.max((t.count / max) * 100, 4);
+    wrap.innerHTML = `
+      <span class="trend-count">${t.count}</span>
+      <div class="trend-bar" style="height:${heightPct}%;"></div>
+      <span class="trend-label">${escapeHtml(t.period)}</span>
+    `;
+    container.appendChild(wrap);
+  });
+}
+
+function renderBarList(containerId, items, { labelFormatter } = {}) {
+  const container = el(containerId);
+  container.innerHTML = "";
+  if (!items || items.length === 0) {
+    container.innerHTML = '<span class="hint">No data yet.</span>';
+    return;
+  }
+  const max = Math.max(...items.map((i) => i.count), 1);
+  items.forEach((item) => {
+    const label = labelFormatter ? labelFormatter(item.key) : humanize(item.key);
+    const pct = Math.max((item.count / max) * 100, 4);
+    const row = document.createElement("div");
+    row.className = "bar-list-row";
+    row.innerHTML = `
+      <span class="bar-list-label" title="${escapeHtml(label)}">${escapeHtml(label)}</span>
+      <span class="bar-list-track"><span class="bar-list-fill" style="width:${pct}%;"></span></span>
+      <span class="bar-list-count">${item.count}</span>
+    `;
+    container.appendChild(row);
+  });
+}
+
+function renderAnalytics(data) {
+  renderStatCards(data);
+  renderTrendChart(data.trend);
+  renderBarList("an-category-bars", data.category_breakdown, { labelFormatter: (k) => CATEGORY_LABELS[k] || humanize(k) });
+  renderBarList("an-nature-bars", data.nature_breakdown);
+  renderBarList("an-site-bars", data.top_sites, { labelFormatter: (k) => k });
+  renderBarList("an-reporter-bars", data.top_reporters, { labelFormatter: (k) => k });
+  renderBarList("an-reviewer-bars", data.top_reviewers, { labelFormatter: (k) => k });
+  renderBarList("an-approver-bars", data.top_approvers, { labelFormatter: (k) => k });
+
+  const peopleBody = el("an-repeat-people-rows");
+  peopleBody.innerHTML = "";
+  if (data.repeat_involved_persons.length === 0) {
+    peopleBody.innerHTML = '<tr><td colspan="4" class="hint">No one appears in more than one incident in this range.</td></tr>';
+  } else {
+    data.repeat_involved_persons.forEach((p) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${escapeHtml(p.name)}</td>
+        <td>${escapeHtml(p.id_number) || "—"}</td>
+        <td><span class="repeat-count-badge">${p.count}×</span></td>
+        <td>${escapeHtml(p.last_seen) || "—"}</td>
+      `;
+      peopleBody.appendChild(tr);
+    });
+  }
+
+  const patternsBody = el("an-repeat-patterns-rows");
+  patternsBody.innerHTML = "";
+  if (data.repeat_site_category_patterns.length === 0) {
+    patternsBody.innerHTML = '<tr><td colspan="3" class="hint">No recurring site/type patterns in this range.</td></tr>';
+  } else {
+    data.repeat_site_category_patterns.forEach((p) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${escapeHtml(p.site_location)}</td>
+        <td>${escapeHtml(CATEGORY_LABELS[p.category] || humanize(p.category))}</td>
+        <td><span class="repeat-count-badge">${p.count}×</span></td>
+      `;
+      patternsBody.appendChild(tr);
+    });
   }
 }
 
@@ -684,6 +941,10 @@ function wireEvents() {
 
   el("add-person-row-btn").addEventListener("click", () => addPersonRow());
   el("new-incident-form").addEventListener("submit", submitNewIncident);
+  el("ni-prepared-sign-btn").addEventListener("click", openPreparedSignaturePad);
+
+  el("tab-analytics").addEventListener("click", () => showTab("analytics"));
+  el("an-refresh-btn").addEventListener("click", loadAnalytics);
 }
 
 function initSelects() {
@@ -703,5 +964,6 @@ function initSelects() {
 
 initSelects();
 wireEvents();
+initSignaturePad();
 resetNewIncidentForm();
 loadIncidents();
