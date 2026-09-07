@@ -1,3 +1,4 @@
+from app.config import get_settings
 from tests.conftest import create_incident as _create_incident
 from tests.conftest import incident_payload as _incident_payload
 
@@ -74,13 +75,18 @@ async def test_update_status_and_approvals_append_timeline(client):
     assert len(body["timeline"]) == 2
     assert body["timeline"][-1]["action"] == "status_change"
 
+    # The default `client` fixture is authenticated as the admin account,
+    # which satisfies every role check — so the sign-off is attributed to
+    # them, not to whatever name is (ignored) in the request body. Role
+    # gating and identity-binding for non-admin signers are covered in
+    # test_auth.py.
     resp = await client.patch(
         f"/incidents/{created['id']}",
-        json={"reviewed_by": {"name": "Lina Haddad", "position": "Security Supervisor", "signed_date": "2026-09-08"}},
+        json={"reviewed_by": {"name": "Someone Else", "position": "Security Supervisor", "signed_date": "2026-09-08"}},
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["reviewed_by"]["name"] == "Lina Haddad"
+    assert body["reviewed_by"]["name"] == get_settings().admin_full_name
     assert body["timeline"][-1]["action"] == "reviewed_by"
 
 

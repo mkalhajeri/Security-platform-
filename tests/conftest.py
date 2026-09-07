@@ -2,19 +2,19 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from mongomock_motor import AsyncMongoMockClient
 
+from app.auth import ensure_bootstrap_admin
+from app.config import get_settings
 from app.database import get_database
 from app.main import app
 
 
 @pytest_asyncio.fixture
 async def test_db():
-    client = AsyncMongoMockClient()
-    db = client["security_platform_test"]
-
-    async def _override_get_database():
-        return db
+    mock_client = AsyncMongoMockClient()
+    db = mock_client["security_platform_test"]
 
     app.dependency_overrides[get_database] = lambda: db
+    await ensure_bootstrap_admin(db)
     yield db
     app.dependency_overrides.pop(get_database, None)
 
@@ -24,9 +24,47 @@ async def client(test_db):
     # ASGITransport never sends lifespan events, so app startup/shutdown
     # (real MongoDB connection) is never triggered — tests run entirely
     # against the mocked db injected via the dependency override above.
+    #
+    # Authenticated as the bootstrap admin by default: admin satisfies
+    # every role check, so most tests don't need to think about auth at
+    # all. Role-gating itself is exercised separately in test_auth.py via
+    # as_role(), which returns a client logged in as a specific role.
     transport = ASGITransport(app=app)
+    settings = get_settings()
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        login = await ac.post(
+            "/auth/login",
+            json={"email": settings.admin_email, "password": settings.admin_password},
+        )
+        assert login.status_code == 200, login.text
+        ac.headers["Authorization"] = f"Bearer {login.json()['access_token']}"
         yield ac
+
+
+async def create_user(admin_client, *, email, full_name, role, password="Password123!"):
+    """Provision an account via the admin-only endpoint. `admin_client` must
+    already be authenticated as an admin (the default `client` fixture is)."""
+    resp = await admin_client.post(
+        "/users",
+        json={"email": email, "full_name": full_name, "role": role, "password": password},
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+async def as_role(admin_client, role, *, email=None, full_name=None, password="Password123!"):
+    """Create a fresh account with the given role and return a new
+    AsyncClient authenticated as that user (independent of `admin_client`,
+    which stays logged in as admin)."""
+    email = email or f"{role}@example.com"
+    full_name = full_name or role.replace("_", " ").title()
+    await create_user(admin_client, email=email, full_name=full_name, role=role, password=password)
+
+    ac = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    login = await ac.post("/auth/login", json={"email": email, "password": password})
+    assert login.status_code == 200, login.text
+    ac.headers["Authorization"] = f"Bearer {login.json()['access_token']}"
+    return ac
 
 
 def incident_payload(**overrides):

@@ -49,7 +49,56 @@ const APPROVAL_FIELDS = [
   ["approved_by", "Approved By", "Management"],
 ];
 
+// Mirrors app/auth_models.py's Role/ROLE_LEVEL and app/routers/incidents.py's
+// _SIGNOFF_MIN_ROLE — kept in sync by hand since this is a static frontend
+// with no shared build step. The backend is the actual enforcement point;
+// this only drives which controls the UI shows as usable.
+const ROLES = ["security_officer", "security_supervisor", "management", "admin"];
+const ROLE_LEVEL = { security_officer: 1, security_supervisor: 2, management: 3, admin: 4 };
+const SIGNOFF_MIN_ROLE = { reviewed_by: "security_supervisor", approved_by: "management" };
+
 const PAGE_SIZE = 20;
+
+// ---------------------------------------------------------------------
+// Auth state
+// ---------------------------------------------------------------------
+
+const AUTH_STORAGE_KEY = "sp_auth";
+const auth = { token: null, user: null };
+
+function loadStoredAuth() {
+  try {
+    const raw = localStorage.getItem(AUTH_STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.token && parsed.user) {
+      auth.token = parsed.token;
+      auth.user = parsed.user;
+    }
+  } catch (_) {
+    // corrupted or inaccessible storage — just start logged out
+  }
+}
+
+function persistAuth() {
+  try {
+    if (auth.token && auth.user) {
+      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ token: auth.token, user: auth.user }));
+    } else {
+      localStorage.removeItem(AUTH_STORAGE_KEY);
+    }
+  } catch (_) {
+    // private browsing / storage disabled — session just won't survive a reload
+  }
+}
+
+function hasMinRole(role) {
+  return !!auth.user && ROLE_LEVEL[auth.user.role] >= ROLE_LEVEL[role];
+}
+
+function isAdmin() {
+  return hasMinRole("admin");
+}
 
 const state = {
   offset: 0,
@@ -93,8 +142,20 @@ function showToast(message, isError = false) {
   }, 4000);
 }
 
-async function api(path, options = {}) {
-  const resp = await fetch(path, options);
+async function api(path, options = {}, { skipAuthRedirect = false } = {}) {
+  const headers = { ...(options.headers || {}) };
+  if (auth.token) headers.Authorization = `Bearer ${auth.token}`;
+
+  const resp = await fetch(path, { ...options, headers });
+
+  if (resp.status === 401 && !skipAuthRedirect) {
+    // Token missing/expired/invalid, or the account was disabled since
+    // login — there's no recovering from this without logging in again.
+    logout();
+    showToast("Your session has ended — please log in again.", true);
+    throw new Error("Session expired");
+  }
+
   if (!resp.ok) {
     let detail = `Request failed (${resp.status})`;
     try {
@@ -113,11 +174,8 @@ async function api(path, options = {}) {
   return resp.json();
 }
 
-function apiJson(path, options = {}) {
-  return api(path, {
-    ...options,
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-  });
+function apiJson(path, options = {}, config) {
+  return api(path, { ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) } }, config);
 }
 
 function populateSelect(select, values, { includeEmpty, emptyLabel, labels } = {}) {
@@ -157,6 +215,70 @@ function escapeHtml(str) {
 }
 
 // ---------------------------------------------------------------------
+// Login / logout
+// ---------------------------------------------------------------------
+
+function showLoginScreen() {
+  el("login-screen").hidden = false;
+  el("app-shell").hidden = true;
+}
+
+function showApp() {
+  el("login-screen").hidden = true;
+  el("app-shell").hidden = false;
+  el("current-user-label").textContent = `${auth.user.full_name} · ${humanize(auth.user.role)}`;
+  el("tab-users").hidden = !isAdmin();
+  resetNewIncidentForm(); // now that auth.user is known, prefill "prepared by"
+  showTab("queue");
+  loadIncidents();
+}
+
+async function handleLogin(evt) {
+  evt.preventDefault();
+  el("login-error").hidden = true;
+  const email = el("login-email").value.trim();
+  const password = el("login-password").value;
+  try {
+    const data = await apiJson("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }, { skipAuthRedirect: true });
+    auth.token = data.access_token;
+    auth.user = data.user;
+    persistAuth();
+    el("login-form").reset();
+    showApp();
+  } catch (err) {
+    el("login-error").textContent = err.message || "Login failed.";
+    el("login-error").hidden = false;
+  }
+}
+
+function logout() {
+  auth.token = null;
+  auth.user = null;
+  persistAuth();
+  showLoginScreen();
+}
+
+async function bootstrapAuth() {
+  loadStoredAuth();
+  if (!auth.token) {
+    showLoginScreen();
+    return;
+  }
+  try {
+    // Validate the stored token still works (not expired, account not
+    // since-disabled) before trusting the cached user profile.
+    auth.user = await apiJson("/auth/me", {}, { skipAuthRedirect: true });
+    persistAuth();
+    showApp();
+  } catch (_) {
+    auth.token = null;
+    auth.user = null;
+    persistAuth();
+    showLoginScreen();
+  }
+}
+
+// ---------------------------------------------------------------------
 // Tabs
 // ---------------------------------------------------------------------
 
@@ -164,10 +286,13 @@ function showTab(tab) {
   el("view-queue").hidden = tab !== "queue";
   el("view-new").hidden = tab !== "new";
   el("view-analytics").hidden = tab !== "analytics";
+  el("view-users").hidden = tab !== "users";
   el("tab-queue").classList.toggle("active", tab === "queue");
   el("tab-new").classList.toggle("active", tab === "new");
   el("tab-analytics").classList.toggle("active", tab === "analytics");
+  el("tab-users").classList.toggle("active", tab === "users");
   if (tab === "analytics") loadAnalytics();
+  if (tab === "users") loadUsers();
 }
 
 // ---------------------------------------------------------------------
@@ -255,6 +380,29 @@ async function selectIncident(id) {
   }
 }
 
+async function openAttachment(incidentId, attachmentId, filename) {
+  // Attachments require the same auth as everything else now, so a plain
+  // <a href> won't carry the Authorization header — fetch it ourselves and
+  // open the resulting blob instead.
+  try {
+    const resp = await fetch(`/incidents/${incidentId}/attachments/${attachmentId}`, {
+      headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : {},
+    });
+    if (resp.status === 401) {
+      logout();
+      showToast("Your session has ended — please log in again.", true);
+      return;
+    }
+    if (!resp.ok) throw new Error(`Request failed (${resp.status})`);
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    window.open(url, "_blank", "noopener");
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (err) {
+    showToast(`Failed to open ${filename}: ${err.message}`, true);
+  }
+}
+
 function renderAttachmentList(container, attachments, incidentId) {
   container.innerHTML = "";
   if (!attachments || attachments.length === 0) {
@@ -265,9 +413,13 @@ function renderAttachmentList(container, attachments, incidentId) {
     const chip = document.createElement("div");
     chip.className = "attachment-chip";
     chip.innerHTML = `
-      <a href="/incidents/${incidentId}/attachments/${a.id}" target="_blank" rel="noopener" title="${escapeHtml(a.filename)}">${escapeHtml(a.filename)}</a>
+      <a href="#" title="${escapeHtml(a.filename)}">${escapeHtml(a.filename)}</a>
       <button type="button" title="Remove" data-attachment-id="${a.id}">✕</button>
     `;
+    chip.querySelector("a").addEventListener("click", (e) => {
+      e.preventDefault();
+      openAttachment(incidentId, a.id, a.filename);
+    });
     chip.querySelector("button").addEventListener("click", () => deleteAttachment(incidentId, a.id));
     container.appendChild(chip);
   }
@@ -279,6 +431,8 @@ function renderApprovals(incident) {
 
   for (const [field, label, roleLabel] of APPROVAL_FIELDS) {
     const value = incident[field];
+    const minRole = SIGNOFF_MIN_ROLE[field]; // undefined for prepared_by — anyone may (re-)prepare
+    const canSign = !minRole || hasMinRole(minRole);
     const card = document.createElement("div");
     card.className = "approval-card";
     card.innerHTML = `
@@ -292,7 +446,8 @@ function renderApprovals(incident) {
       ${value && value.signature_image ? `<img class="signature-preview" src="${value.signature_image}" alt="${label} signature">` : ""}
       <p class="hint" ${value ? "hidden" : ""}>Not yet signed.</p>
       <div style="margin-top:0.5rem;">
-        <button type="button" class="btn btn-sm" data-sign="${field}">${value ? "Edit sign-off" : "Sign"}</button>
+        <button type="button" class="btn btn-sm" data-sign="${field}" ${canSign ? "" : "disabled"}
+          title="${canSign ? "" : `Requires the ${humanize(minRole)} role or higher`}">${value ? "Edit sign-off" : "Sign"}</button>
       </div>
     `;
     grid.appendChild(card);
@@ -308,9 +463,14 @@ function openApprovalSignature(field) {
   if (!incident) return;
   const [, label, roleLabel] = APPROVAL_FIELDS.find(([f]) => f === field);
   const existing = incident[field] || {};
+  // reviewed_by/approved_by are role-gated: the server always overwrites
+  // name/position with whoever is logged in, so let the modal reflect that
+  // instead of implying a typed name here would matter.
+  const isRoleGated = !!SIGNOFF_MIN_ROLE[field];
   openSignatureModal({
     title: `${label} (${roleLabel})`,
-    initial: existing,
+    initial: isRoleGated ? { ...existing, name: auth.user.full_name, position: existing.position || null } : existing,
+    lockName: isRoleGated,
     onSave: async (result) => {
       try {
         const updated = await apiJson(`/incidents/${incident.id}`, {
@@ -333,6 +493,7 @@ function renderDetail(incident) {
   el("detail-empty").hidden = true;
   el("detail-content").hidden = false;
   el("detail-content").dataset.id = incident.id;
+  el("delete-incident-btn").hidden = !isAdmin();
 
   el("detail-title").textContent = incident.site_location;
   const statusBadge = el("detail-status");
@@ -452,7 +613,6 @@ async function addComment(evt) {
   const id = el("detail-content").dataset.id;
   if (!id) return;
   const payload = {
-    actor: el("comment-actor").value.trim(),
     action: el("comment-action").value.trim() || "comment",
     note: el("comment-note").value.trim() || null,
   };
@@ -591,10 +751,15 @@ function initSignaturePad() {
   });
 }
 
-function openSignatureModal({ title, initial, onSave }) {
+function openSignatureModal({ title, initial, onSave, lockName = false }) {
   initial = initial || {};
   el("signature-modal-title").textContent = title || "Sign";
   el("sig-name").value = initial.name || "";
+  el("sig-name").readOnly = lockName;
+  el("sig-name-wrap").style.opacity = lockName ? "0.7" : "1";
+  el("signature-modal-note").textContent = lockName
+    ? `Signing as ${initial.name} — this identity comes from your login and can't be changed here.`
+    : "Draw your signature below, or leave it blank and just type your name.";
   el("sig-position").value = initial.position || "";
   el("sig-date").value = initial.signed_date || todayIso();
   el("sig-typed").value = initial.signature || "";
@@ -662,6 +827,12 @@ function resetNewIncidentForm() {
   state.personRowCount = 0;
   addPersonRow();
   el("ni-prepared-date").value = todayIso();
+  // Convenience default — whoever is filing the report is filling this
+  // form in, so start "prepared by" as them; still freely editable.
+  if (auth.user) {
+    el("ni-prepared-name").value = auth.user.full_name;
+    el("ni-prepared-position").value = humanize(auth.user.role);
+  }
   niPreparedSignatureImage = null;
   el("ni-prepared-signature-preview").hidden = true;
   el("ni-prepared-signature-preview").src = "";
@@ -887,6 +1058,100 @@ function renderAnalytics(data) {
 }
 
 // ---------------------------------------------------------------------
+// Users (admin only)
+// ---------------------------------------------------------------------
+
+let usersCache = [];
+
+async function loadUsers() {
+  try {
+    usersCache = await apiJson("/users");
+    renderUsers();
+  } catch (err) {
+    showToast(`Failed to load accounts: ${err.message}`, true);
+  }
+}
+
+function renderUsers() {
+  el("users-count").textContent = usersCache.length;
+  const tbody = el("users-rows");
+  tbody.innerHTML = "";
+
+  usersCache.forEach((u) => {
+    const isSelf = u.id === auth.user.id;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td data-label="Name">${escapeHtml(u.full_name)}</td>
+      <td data-label="Email">${escapeHtml(u.email)}</td>
+      <td data-label="Role"></td>
+      <td data-label="Status">
+        <label style="flex-direction:row;align-items:center;gap:0.4rem;margin:0;">
+          <input type="checkbox" class="u-active" ${u.is_active ? "checked" : ""} ${isSelf ? "disabled" : ""} style="width:auto;">
+          Active
+        </label>
+      </td>
+      <td data-label="">
+        <button type="button" class="btn btn-danger btn-sm u-delete" ${isSelf ? "disabled" : ""}>Delete</button>
+      </td>
+    `;
+
+    const roleSelect = document.createElement("select");
+    roleSelect.className = "role-select-inline u-role";
+    populateSelect(roleSelect, ROLES);
+    roleSelect.value = u.role;
+    if (isSelf) roleSelect.disabled = true;
+    tr.querySelector('[data-label="Role"]').appendChild(roleSelect);
+
+    roleSelect.addEventListener("change", () => updateUser(u.id, { role: roleSelect.value }));
+    tr.querySelector(".u-active").addEventListener("change", (e) => updateUser(u.id, { is_active: e.target.checked }));
+    tr.querySelector(".u-delete").addEventListener("click", () => deleteUser(u.id, u.full_name));
+
+    tbody.appendChild(tr);
+  });
+}
+
+async function updateUser(userId, patch) {
+  try {
+    await apiJson(`/users/${userId}`, { method: "PATCH", body: JSON.stringify(patch) });
+    showToast("Account updated.");
+    loadUsers();
+  } catch (err) {
+    showToast(`Update failed: ${err.message}`, true);
+    loadUsers(); // revert any optimistic UI (e.g. a toggled checkbox)
+  }
+}
+
+async function deleteUser(userId, fullName) {
+  if (!confirm(`Delete the account for ${fullName}? This cannot be undone.`)) return;
+  try {
+    await api(`/users/${userId}`, { method: "DELETE" });
+    showToast("Account deleted.");
+    loadUsers();
+  } catch (err) {
+    showToast(`Delete failed: ${err.message}`, true);
+  }
+}
+
+async function submitNewUser(evt) {
+  evt.preventDefault();
+  const payload = {
+    full_name: el("nu-full-name").value.trim(),
+    email: el("nu-email").value.trim(),
+    role: el("nu-role").value,
+    password: el("nu-password").value,
+  };
+  try {
+    await apiJson("/users", { method: "POST", body: JSON.stringify(payload) });
+    showToast(`Account created for ${payload.full_name}.`);
+    el("new-user-form").reset();
+    el("nu-role").value = "security_officer";
+    loadUsers();
+  } catch (err) {
+    showToast(`Failed to create account: ${err.message}`, true);
+  }
+}
+
+// ---------------------------------------------------------------------
 // Wiring
 // ---------------------------------------------------------------------
 
@@ -945,6 +1210,12 @@ function wireEvents() {
 
   el("tab-analytics").addEventListener("click", () => showTab("analytics"));
   el("an-refresh-btn").addEventListener("click", loadAnalytics);
+
+  el("tab-users").addEventListener("click", () => showTab("users"));
+  el("new-user-form").addEventListener("submit", submitNewUser);
+
+  el("login-form").addEventListener("submit", handleLogin);
+  el("logout-btn").addEventListener("click", logout);
 }
 
 function initSelects() {
@@ -960,10 +1231,13 @@ function initSelects() {
   populateSelect(el("ni-nature-of-report"), NATURE_OF_REPORT);
   buildCheckboxGrid(el("ni-categories"), INCIDENT_CATEGORIES, "category");
   buildCheckboxGrid(el("ni-supporting-documents"), SUPPORTING_DOCUMENTS, "supporting");
+
+  populateSelect(el("nu-role"), ROLES);
+  el("nu-role").value = "security_officer";
 }
 
 initSelects();
 wireEvents();
 initSignaturePad();
 resetNewIncidentForm();
-loadIncidents();
+bootstrapAuth();

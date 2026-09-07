@@ -7,6 +7,8 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from fastapi.responses import Response
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from app.auth import get_current_user, require_min_role
+from app.auth_models import ROLE_LEVEL, Role, UserPublic
 from app.database import get_database
 from app.models import (
     AttachmentKind,
@@ -24,7 +26,18 @@ from app.models import (
     utcnow,
 )
 
-router = APIRouter(prefix="/incidents", tags=["incidents"])
+# Every incident endpoint requires a logged-in security-department account;
+# individual endpoints layer on a minimum role where the paper form's own
+# sign-off hierarchy calls for one (see update_incident).
+router = APIRouter(prefix="/incidents", tags=["incidents"], dependencies=[Depends(get_current_user)])
+
+# Section 12 sign-off fields, each gated at the paper form's own minimum
+# role: a Security Officer can prepare a report, but only a Supervisor+ may
+# review it and only Management+ may approve it.
+_SIGNOFF_MIN_ROLE = {
+    "reviewed_by": Role.SECURITY_SUPERVISOR,
+    "approved_by": Role.MANAGEMENT,
+}
 
 # Kept well under MongoDB's 16 MiB document limit, with headroom for the
 # rest of the attachment document and BSON overhead.
@@ -65,6 +78,7 @@ def _json_safe(value):
 @router.post("", response_model=IncidentResponse, status_code=status.HTTP_201_CREATED)
 async def create_incident(
     payload: IncidentCreate,
+    current_user: UserPublic = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ) -> dict:
     now = utcnow()
@@ -76,9 +90,10 @@ async def create_incident(
             "supporting_document_files": [],
             "reviewed_by": None,
             "approved_by": None,
+            "created_by": {"id": current_user.id, "name": current_user.full_name},
             "timeline": [
                 TimelineEntry(
-                    actor=payload.reported_by,
+                    actor=current_user.full_name,
                     action="created",
                     note="Incident reported.",
                 ).model_dump()
@@ -135,6 +150,7 @@ async def get_incident(
 async def update_incident(
     incident_id: str,
     payload: IncidentUpdate,
+    current_user: UserPublic = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ) -> dict:
     oid = _object_id_or_404(incident_id)
@@ -144,13 +160,29 @@ async def update_incident(
     if not updates:
         return incident_to_response(existing)
 
+    # Enforce the sign-off hierarchy, and bind the signer's name/position to
+    # who is actually logged in rather than trusting client-supplied text —
+    # otherwise any user could "sign" a review or approval as someone else.
+    # signed_date/signature/signature_image are the part the signer actually
+    # controls (when they signed, and their drawn or typed signature).
+    for field, min_role in _SIGNOFF_MIN_ROLE.items():
+        if field not in updates or not updates[field]:
+            continue
+        if ROLE_LEVEL[current_user.role] < ROLE_LEVEL[min_role]:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                f"Signing '{field.replace('_', ' ')}' requires the {min_role.value.replace('_', ' ')} role or higher.",
+            )
+        updates[field]["name"] = current_user.full_name
+        updates[field].setdefault("position", None)
+
     timeline_additions = []
     now = utcnow()
 
     if "status" in updates and updates["status"] != existing.get("status"):
         timeline_additions.append(
             TimelineEntry(
-                actor="system",
+                actor=current_user.full_name,
                 action="status_change",
                 note=f"Status changed from {existing.get('status')} to {updates['status']}",
             ).model_dump()
@@ -158,12 +190,11 @@ async def update_incident(
 
     for field, label in (("reviewed_by", "Reviewed by"), ("approved_by", "Approved by")):
         if field in updates and updates[field] and not existing.get(field):
-            name = (updates[field] or {}).get("name") or "someone"
             timeline_additions.append(
                 TimelineEntry(
-                    actor=name,
+                    actor=current_user.full_name,
                     action=field,
-                    note=f"{label} {name}",
+                    note=f"{label} {current_user.full_name}",
                 ).model_dump()
             )
 
@@ -182,12 +213,13 @@ async def update_incident(
 async def add_timeline_entry(
     incident_id: str,
     entry: TimelineEntryCreate,
+    current_user: UserPublic = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ) -> dict:
     oid = _object_id_or_404(incident_id)
     await _get_incident_or_404(db, incident_id)
 
-    new_entry = TimelineEntry(**entry.model_dump())
+    new_entry = TimelineEntry(actor=current_user.full_name, **entry.model_dump())
     await db["incidents"].update_one(
         {"_id": oid},
         {
@@ -199,7 +231,11 @@ async def add_timeline_entry(
     return incident_to_response(updated)
 
 
-@router.delete("/{incident_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{incident_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_min_role(Role.ADMIN))],
+)
 async def delete_incident(
     incident_id: str,
     db: AsyncIOMotorDatabase = Depends(get_database),
@@ -227,6 +263,7 @@ async def upload_attachment(
     kind: AttachmentKind,
     file: UploadFile = File(...),
     description: str | None = Form(default=None),
+    current_user: UserPublic = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ) -> dict:
     oid = _object_id_or_404(incident_id)
@@ -267,7 +304,7 @@ async def upload_attachment(
 
     field = "incident_pictures" if kind == AttachmentKind.PICTURE else "supporting_document_files"
     timeline_entry = TimelineEntry(
-        actor="system",
+        actor=current_user.full_name,
         action="attachment_added",
         note=f"Added {kind.value.replace('_', ' ')}: {attachment_doc['filename']}",
     ).model_dump()
@@ -307,6 +344,7 @@ async def get_attachment(
 async def delete_attachment(
     incident_id: str,
     attachment_id: str,
+    current_user: UserPublic = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ) -> dict:
     incident_oid = _object_id_or_404(incident_id)
@@ -327,7 +365,7 @@ async def delete_attachment(
             },
             "$push": {
                 "timeline": TimelineEntry(
-                    actor="system", action="attachment_removed", note="Removed an attachment."
+                    actor=current_user.full_name, action="attachment_removed", note="Removed an attachment."
                 ).model_dump()
             },
             "$set": {"updated_at": now},

@@ -1,4 +1,4 @@
-from tests.conftest import create_incident
+from tests.conftest import as_role, create_incident
 
 
 async def test_analytics_empty(client):
@@ -91,13 +91,16 @@ async def test_analytics_date_range_filter(client):
 
 async def test_analytics_reviewers_and_approvers(client):
     created = (await create_incident(client)).json()
-    await client.patch(
+
+    supervisor = await as_role(client, "security_supervisor", full_name="Lina Haddad")
+    await supervisor.patch(
         f"/incidents/{created['id']}",
-        json={"reviewed_by": {"name": "Lina Haddad", "signed_date": "2026-09-08"}},
+        json={"reviewed_by": {"signed_date": "2026-09-08"}},
     )
-    await client.patch(
+    manager = await as_role(client, "management", full_name="Youssef Kanaan")
+    await manager.patch(
         f"/incidents/{created['id']}",
-        json={"approved_by": {"name": "Youssef Kanaan", "signed_date": "2026-09-09"}},
+        json={"approved_by": {"signed_date": "2026-09-09"}},
     )
 
     resp = await client.get("/analytics")

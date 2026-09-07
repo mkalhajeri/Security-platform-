@@ -1062,6 +1062,36 @@ table.stats-table tr:last-child td {
   font-size: 0.78rem;
 }
 
+/* ---------- login screen ---------- */
+
+#login-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.login-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-md);
+  padding: 2rem 2.2rem;
+  width: 100%;
+  max-width: 380px;
+}
+
+.login-card .brand {
+  font-size: 1.2rem;
+}
+
+/* ---------- users admin view ---------- */
+
+.role-select-inline {
+  padding: 0.25rem 0.4rem;
+  font-size: 0.82rem;
+}
+
 /* ---------- toast ---------- */
 
 .toast {

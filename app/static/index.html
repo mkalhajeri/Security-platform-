@@ -7,18 +7,43 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">🛡️ Security Platform</div>
-    <div class="brand-sub">Physical Security Incident Reports</div>
-    <nav class="tabs">
-      <button class="tab-btn active" id="tab-queue" type="button">Incident Queue</button>
-      <button class="tab-btn" id="tab-new" type="button">+ New Report</button>
-      <button class="tab-btn" id="tab-analytics" type="button">Analytics</button>
-    </nav>
-    <a class="docs-link" href="/docs" target="_blank" rel="noopener">API docs</a>
-  </header>
-
   <div id="toast" class="toast" hidden></div>
+
+  <!-- ============================= LOGIN SCREEN ============================= -->
+  <main class="view" id="login-screen">
+    <div class="login-card">
+      <div class="brand" style="margin-bottom:0.3rem;">🛡️ Security Platform</div>
+      <div class="brand-sub" style="margin-bottom:1.3rem;">Sign in with your security department account</div>
+      <form id="login-form">
+        <label>Email
+          <input type="email" id="login-email" required autocomplete="username">
+        </label>
+        <label>Password
+          <input type="password" id="login-password" required autocomplete="current-password">
+        </label>
+        <p class="hint" id="login-error" style="color:var(--danger);" hidden></p>
+        <button type="submit" class="btn btn-accent" style="width:100%;">Log in</button>
+      </form>
+      <p class="hint" style="margin-top:1rem;">No public sign-up — accounts are created by an admin for security department staff.</p>
+    </div>
+  </main>
+
+  <!-- ============================= APP SHELL ============================= -->
+  <div id="app-shell" hidden>
+    <header class="topbar">
+      <div class="brand">🛡️ Security Platform</div>
+      <div class="brand-sub">Physical Security Incident Reports</div>
+      <nav class="tabs">
+        <button class="tab-btn active" id="tab-queue" type="button">Incident Queue</button>
+        <button class="tab-btn" id="tab-new" type="button">+ New Report</button>
+        <button class="tab-btn" id="tab-analytics" type="button">Analytics</button>
+        <button class="tab-btn" id="tab-users" type="button" hidden>Users</button>
+      </nav>
+      <div class="spacer"></div>
+      <span class="hint" id="current-user-label" style="padding:0;margin-right:0.5rem;"></span>
+      <button class="btn btn-ghost btn-sm" id="logout-btn" type="button">Log out</button>
+      <a class="docs-link" href="/docs" target="_blank" rel="noopener">API docs</a>
+    </header>
 
   <!-- ============================= QUEUE VIEW ============================= -->
   <main class="view" id="view-queue">
@@ -145,10 +170,7 @@
 
           <form id="comment-form" class="comment-form">
             <h4>Add update / comment</h4>
-            <div class="form-row">
-              <input id="comment-actor" type="text" placeholder="Your name" required />
-              <input id="comment-action" type="text" placeholder="Action (e.g. comment)" value="comment" required />
-            </div>
+            <input id="comment-action" type="text" placeholder="Action (e.g. comment)" value="comment" required />
             <textarea id="comment-note" placeholder="Note…" rows="2"></textarea>
             <button type="submit" class="btn btn-secondary">Add to timeline</button>
           </form>
@@ -380,13 +402,50 @@
     </section>
   </main>
 
+  <!-- ============================= USERS VIEW (admin only) ============================= -->
+  <main class="view" id="view-users" hidden>
+    <div class="layout" style="grid-template-columns: minmax(0,1fr) minmax(0,0.7fr);">
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Accounts <span id="users-count" class="count-pill">0</span></h2>
+        </div>
+        <p class="hint" style="padding-top:0;">No public sign-up — create an account for each security department staff member below.</p>
+        <table class="incident-table responsive-table" id="users-table">
+          <thead>
+            <tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr>
+          </thead>
+          <tbody id="users-rows"></tbody>
+        </table>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header"><h2>New account</h2></div>
+        <form id="new-user-form">
+          <label>Full name
+            <input type="text" id="nu-full-name" required maxlength="200">
+          </label>
+          <label>Email
+            <input type="email" id="nu-email" required>
+          </label>
+          <label>Role
+            <select id="nu-role"></select>
+          </label>
+          <label>Temporary password
+            <input type="text" id="nu-password" required minlength="8" placeholder="At least 8 characters">
+          </label>
+          <button type="submit" class="btn btn-accent" style="width:100%;">Create account</button>
+        </form>
+      </section>
+    </div>
+  </main>
+
   <!-- ============================= SIGNATURE MODAL ============================= -->
   <div class="modal-overlay" id="signature-modal" hidden>
     <div class="modal-card">
       <h2 id="signature-modal-title">Sign</h2>
-      <p class="section-hint">Draw your signature below, or leave it blank and just type your name.</p>
+      <p class="section-hint" id="signature-modal-note">Draw your signature below, or leave it blank and just type your name.</p>
 
-      <label>Name
+      <label id="sig-name-wrap">Name
         <input type="text" id="sig-name" maxlength="200" />
       </label>
       <div class="form-row">
@@ -415,6 +474,8 @@
       </div>
     </div>
   </div>
+
+  </div> <!-- /#app-shell -->
 
   <script src="/app.js"></script>
 </body>

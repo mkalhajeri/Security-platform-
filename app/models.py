@@ -11,6 +11,8 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+from app.auth_models import CreatedBy
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -143,7 +145,9 @@ class TimelineEntry(BaseModel):
 
 
 class TimelineEntryCreate(BaseModel):
-    actor: str = Field(..., min_length=1, max_length=200)
+    """`actor` is not client-supplied — the endpoint fills it in from the
+    authenticated user, so someone can't post a comment "as" someone else."""
+
     action: str = Field(..., min_length=1, max_length=100)
     note: str | None = Field(default=None, max_length=5000)
 
@@ -292,6 +296,7 @@ class IncidentResponse(BaseModel):
     approved_by: ApprovalSignOff | None = None
 
     timeline: list[TimelineEntry] = Field(default_factory=list)
+    created_by: CreatedBy | None = None
     created_at: datetime
     updated_at: datetime
 
