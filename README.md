@@ -1,13 +1,14 @@
 # Security Platform
 
-A security platform, starting with an **incident report system** and the
-shared data store behind it. Built as a REST API today; more modules
+A security platform, starting with an **incident report system**, a basic
+**web UI** for it, and the shared data store behind both. More modules
 (assets, users, alerts, integrations) are expected to plug into the same
 FastAPI app and MongoDB database over time.
 
 ## Stack
 
 - **API:** Python 3.11+, [FastAPI](https://fastapi.tiangolo.com/)
+- **UI:** Static HTML/CSS/vanilla JS single-page app, served directly by the API — no build step, no external dependencies
 - **Database:** MongoDB, accessed asynchronously via [Motor](https://motor.readthedocs.io/)
 - **Tests:** pytest + httpx, against an in-memory MongoDB mock (no real database needed to run the test suite)
 
@@ -22,6 +23,10 @@ app/
   routers/
     health.py         GET /health
     incidents.py       Incident CRUD + timeline endpoints
+  static/
+    index.html        UI layout
+    styles.css        UI styling
+    app.js            UI logic (fetches the /incidents API)
 tests/
   conftest.py         Test fixtures (mocked MongoDB, HTTP test client)
   test_incidents.py   API tests covering the incident endpoints
@@ -51,13 +56,22 @@ cp .env.example .env
 # edit .env if your MongoDB isn't at the default local address
 ```
 
-### 4. Run the API
+### 4. Run the app
 
 ```bash
 uvicorn app.main:app --reload
 ```
 
+- Web UI: http://localhost:8000/
 - Interactive API docs: http://localhost:8000/docs
+
+Or with Docker (bundles the API + MongoDB, no local Python/Mongo install needed):
+
+```bash
+docker compose up --build
+```
+
+Then open http://localhost:8000/.
 - Health check: http://localhost:8000/health
 
 ### 5. Run the tests
@@ -92,6 +106,8 @@ Stored in the `incidents` collection.
 
 | Method | Path                              | Description                                  |
 |--------|------------------------------------|-----------------------------------------------|
+| GET    | `/`                                | Web UI (static SPA)                           |
+| GET    | `/api/info`                        | API name/version metadata                     |
 | GET    | `/health`                          | Liveness/readiness check (pings MongoDB)      |
 | POST   | `/incidents`                       | Report a new incident                         |
 | GET    | `/incidents`                       | List incidents (filter by `status`, `severity`, `category`, `search`; paginate with `limit`/`offset`) |
@@ -119,14 +135,12 @@ curl -X POST http://localhost:8000/incidents \
 
 ## Roadmap
 
-This is the first milestone (incident reporting + storage). Natural next
-steps for the platform:
+Incident reporting + storage, a Docker-based local setup, and a basic web
+UI are done. Natural next steps for the platform:
 
 - Authentication & authorization (tie incidents to accounts, restrict who can update/delete)
-- Basic web UI for submitting and triaging incidents
 - File/evidence attachment storage (e.g. object storage + metadata in Mongo)
 - Notifications/webhooks on new or updated incidents
-- Docker Compose setup for one-command local development
 - Additional platform modules (asset inventory, vulnerability tracking, alerting) sharing the same database
 
 ## Notes on the database driver
