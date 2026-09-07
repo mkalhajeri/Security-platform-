@@ -1,5 +1,12 @@
-async def test_root(client):
+async def test_root_serves_ui(client):
     resp = await client.get("/")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
+    assert "Security Platform" in resp.text
+
+
+async def test_api_info(client):
+    resp = await client.get("/api/info")
     assert resp.status_code == 200
     assert "name" in resp.json()
 

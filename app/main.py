@@ -6,13 +6,17 @@ to register their own routers here and share the same database.
 """
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.database import close_mongo_connection, connect_to_mongo
 from app.routers import health, incidents
+
+STATIC_DIR = Path(__file__).parent / "static"
 
 settings = get_settings()
 
@@ -42,10 +46,16 @@ app.include_router(health.router)
 app.include_router(incidents.router)
 
 
-@app.get("/")
-async def root() -> dict:
+@app.get("/api/info")
+async def api_info() -> dict:
     return {
         "name": settings.app_name,
         "version": settings.app_version,
         "docs": "/docs",
     }
+
+
+# Basic web UI (static HTML/CSS/JS, no build step) — mounted last so it
+# only catches requests not handled by the API routes above. html=True
+# serves static/index.html for "/".
+app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="ui")

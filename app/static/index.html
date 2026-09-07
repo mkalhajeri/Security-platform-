@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Security Platform — Incidents</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">🛡️ Security Platform</div>
+    <div class="brand-sub">Incident Reports</div>
+    <a class="docs-link" href="/docs" target="_blank" rel="noopener">API docs</a>
+  </header>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <main class="layout">
+    <section class="panel list-panel">
+      <div class="panel-header">
+        <h2>Incidents <span id="total-count" class="count-pill">0</span></h2>
+        <button id="new-incident-btn" class="btn btn-primary">+ New Incident</button>
+      </div>
+
+      <div class="filters">
+        <input id="filter-search" type="search" placeholder="Search title/description…" />
+        <select id="filter-status">
+          <option value="">All statuses</option>
+        </select>
+        <select id="filter-severity">
+          <option value="">All severities</option>
+        </select>
+        <select id="filter-category">
+          <option value="">All categories</option>
+        </select>
+      </div>
+
+      <div id="list-loading" class="hint">Loading…</div>
+      <div id="list-empty" class="hint" hidden>No incidents match these filters.</div>
+
+      <table class="incident-table" id="incident-table" hidden>
+        <thead>
+          <tr>
+            <th>Title</th>
+            <th>Severity</th>
+            <th>Status</th>
+            <th>Category</th>
+            <th>Reported</th>
+          </tr>
+        </thead>
+        <tbody id="incident-rows"></tbody>
+      </table>
+
+      <div class="pagination">
+        <button id="prev-page" class="btn btn-ghost">← Prev</button>
+        <span id="page-info" class="hint"></span>
+        <button id="next-page" class="btn btn-ghost">Next →</button>
+      </div>
+    </section>
+
+    <section class="panel detail-panel">
+      <div id="detail-empty" class="hint">Select an incident from the list to see details.</div>
+
+      <div id="detail-content" hidden>
+        <div class="detail-header">
+          <h2 id="detail-title"></h2>
+          <button id="delete-incident-btn" class="btn btn-danger">Delete</button>
+        </div>
+
+        <div class="badges">
+          <span id="detail-severity" class="badge"></span>
+          <span id="detail-status" class="badge"></span>
+          <span id="detail-category" class="badge badge-neutral"></span>
+        </div>
+
+        <p id="detail-description" class="description"></p>
+
+        <dl class="meta-grid">
+          <dt>Reporter</dt>
+          <dd id="detail-reporter"></dd>
+          <dt>Affected systems</dt>
+          <dd id="detail-systems"></dd>
+          <dt>Tags</dt>
+          <dd id="detail-tags"></dd>
+          <dt>Reported</dt>
+          <dd id="detail-created"></dd>
+          <dt>Last updated</dt>
+          <dd id="detail-updated"></dd>
+          <dt>Resolved</dt>
+          <dd id="detail-resolved"></dd>
+        </dl>
+
+        <div class="update-row">
+          <label>
+            Status
+            <select id="update-status"></select>
+          </label>
+          <label>
+            Severity
+            <select id="update-severity"></select>
+          </label>
+          <button id="save-updates-btn" class="btn btn-secondary">Save changes</button>
+        </div>
+
+        <h3>Timeline</h3>
+        <ul id="detail-timeline" class="timeline"></ul>
+
+        <form id="comment-form" class="comment-form">
+          <h4>Add update / comment</h4>
+          <div class="form-row">
+            <input id="comment-actor" type="text" placeholder="Your name" required />
+            <input id="comment-action" type="text" placeholder="Action (e.g. comment)" value="comment" required />
+          </div>
+          <textarea id="comment-note" placeholder="Note…" rows="2"></textarea>
+          <button type="submit" class="btn btn-secondary">Add to timeline</button>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <div id="new-incident-modal" class="modal" hidden>
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2>Report a new incident</h2>
+        <button id="close-modal-btn" class="btn btn-ghost">✕</button>
+      </div>
+      <form id="new-incident-form">
+        <label>
+          Title *
+          <input id="ni-title" type="text" required maxlength="300" />
+        </label>
+        <label>
+          Description *
+          <textarea id="ni-description" required rows="4" maxlength="10000"></textarea>
+        </label>
+        <div class="form-row">
+          <label>
+            Severity
+            <select id="ni-severity"></select>
+          </label>
+          <label>
+            Category
+            <select id="ni-category"></select>
+          </label>
+        </div>
+        <div class="form-row">
+          <label>
+            Reporter name *
+            <input id="ni-reporter-name" type="text" required maxlength="200" />
+          </label>
+          <label>
+            Reporter email
+            <input id="ni-reporter-email" type="email" />
+          </label>
+        </div>
+        <label>
+          Affected systems (comma-separated)
+          <input id="ni-systems" type="text" placeholder="auth-service, vpn-gateway" />
+        </label>
+        <label>
+          Tags (comma-separated)
+          <input id="ni-tags" type="text" placeholder="phishing, external" />
+        </label>
+        <div class="modal-actions">
+          <button type="button" id="cancel-new-incident" class="btn btn-ghost">Cancel</button>
+          <button type="submit" class="btn btn-primary">Report incident</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
