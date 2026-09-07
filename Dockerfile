@@ -9,4 +9,6 @@ COPY app ./app
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Hosting platforms (Render, Railway, Heroku-style) inject a PORT env var
+# and expect the app to listen on it; default to 8000 for local/Compose use.
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
