@@ -1,18 +1,52 @@
-// Vanilla JS SPA for the incident reporting UI. No build step, no
-// dependencies — talks to the FastAPI backend at same-origin /incidents.
+// Vanilla JS SPA for physical security incident reporting. No build step,
+// no dependencies — talks to the FastAPI backend at same-origin /incidents.
 
-const SEVERITIES = ["low", "medium", "high", "critical"];
-const STATUSES = ["open", "investigating", "contained", "resolved", "closed"];
-const CATEGORIES = [
-  "malware",
-  "phishing",
-  "data_breach",
-  "unauthorized_access",
-  "denial_of_service",
-  "insider_threat",
-  "vulnerability",
-  "policy_violation",
-  "other",
+const STATUSES = ["reported", "under_review", "closed"];
+const NATURE_OF_REPORT = ["incident", "accident", "near_miss", "security", "other"];
+const REPORTED_VIA = ["email", "phone_call", "sms", "whatsapp", "other"];
+
+// [value, label] — labels/numbering match Section 4 of the paper form.
+const INCIDENT_CATEGORIES = [
+  ["vehicle_accident", "01 Vehicle Accident"],
+  ["injury", "02 Injury / Personal Injury"],
+  ["illness_medical", "03 Illness / Medical Case"],
+  ["fire_explosion", "04 Fire / Explosion"],
+  ["theft", "05 Theft"],
+  ["attempted_theft", "06 Attempted Theft"],
+  ["vandalism_damage", "07 Vandalism / Damage"],
+  ["property_damage", "08 Property Damage"],
+  ["security_breach", "09 Security Breach"],
+  ["harassment", "10 Harassment"],
+  ["verbal_abuse", "11 Verbal Abuse"],
+  ["physical_assault", "12 Physical Assault"],
+  ["drug_alcohol", "13 Drug / Alcohol Related"],
+  ["traffic_violation", "14 Traffic Violation"],
+  ["environmental", "15 Environmental"],
+  ["fall_from_height", "16 Fall from Height"],
+  ["electrical", "17 Electrical"],
+  ["chemical_spill", "18 Chemical Spill"],
+  ["equipment_failure", "19 Equipment Failure"],
+  ["other", "20 Others"],
+];
+
+const SUPPORTING_DOCUMENTS = [
+  ["photos", "Photos"],
+  ["cctv_footage", "CCTV Footage"],
+  ["medical_report", "Medical Report"],
+  ["witness_statement", "Witness Statement"],
+  ["police_report", "Police Report"],
+  ["vehicle_report", "Vehicle Report"],
+  ["maintenance_report", "Maintenance Report"],
+  ["other", "Other"],
+];
+
+const CATEGORY_LABELS = Object.fromEntries(INCIDENT_CATEGORIES);
+const DOCUMENT_LABELS = Object.fromEntries(SUPPORTING_DOCUMENTS);
+
+const APPROVAL_FIELDS = [
+  ["prepared_by", "Prepared By", "Security Officer"],
+  ["reviewed_by", "Reviewed By", "Security Supervisor"],
+  ["approved_by", "Approved By", "Management"],
 ];
 
 const PAGE_SIZE = 20;
@@ -22,19 +56,30 @@ const state = {
   total: 0,
   items: [],
   selectedId: null,
-  filters: { status: "", severity: "", category: "", search: "" },
+  filters: { status: "", category: "", site_location: "", search: "" },
+  personRowCount: 0,
 };
 
 const el = (id) => document.getElementById(id);
 
 function humanize(value) {
-  return value.replace(/_/g, " ");
+  return (value || "").replace(/_/g, " ");
 }
 
 function formatDate(iso) {
   if (!iso) return "—";
   const d = new Date(iso);
+  if (isNaN(d)) return iso;
   return d.toLocaleString();
+}
+
+function formatDateOnly(iso) {
+  if (!iso) return "—";
+  return iso;
+}
+
+function todayIso() {
+  return new Date().toISOString().slice(0, 10);
 }
 
 function showToast(message, isError = false) {
@@ -49,17 +94,14 @@ function showToast(message, isError = false) {
 }
 
 async function api(path, options = {}) {
-  const resp = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
+  const resp = await fetch(path, options);
   if (!resp.ok) {
     let detail = `Request failed (${resp.status})`;
     try {
       const body = await resp.json();
       if (body.detail) {
         detail = Array.isArray(body.detail)
-          ? body.detail.map((d) => d.msg || JSON.stringify(d)).join("; ")
+          ? body.detail.map((d) => (d.loc ? d.loc.join(".") + ": " : "") + (d.msg || JSON.stringify(d))).join("; ")
           : body.detail;
       }
     } catch (_) {
@@ -71,7 +113,14 @@ async function api(path, options = {}) {
   return resp.json();
 }
 
-function populateSelect(select, options, { includeEmpty, emptyLabel } = {}) {
+function apiJson(path, options = {}) {
+  return api(path, {
+    ...options,
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+  });
+}
+
+function populateSelect(select, values, { includeEmpty, emptyLabel, labels } = {}) {
   select.innerHTML = "";
   if (includeEmpty) {
     const opt = document.createElement("option");
@@ -79,33 +128,55 @@ function populateSelect(select, options, { includeEmpty, emptyLabel } = {}) {
     opt.textContent = emptyLabel || "All";
     select.appendChild(opt);
   }
-  for (const value of options) {
+  for (const value of values) {
     const opt = document.createElement("option");
     opt.value = value;
-    opt.textContent = humanize(value);
+    opt.textContent = labels ? labels[value] || humanize(value) : humanize(value);
     select.appendChild(opt);
   }
 }
 
-function initSelects() {
-  populateSelect(el("filter-status"), STATUSES, { includeEmpty: true, emptyLabel: "All statuses" });
-  populateSelect(el("filter-severity"), SEVERITIES, { includeEmpty: true, emptyLabel: "All severities" });
-  populateSelect(el("filter-category"), CATEGORIES, { includeEmpty: true, emptyLabel: "All categories" });
-
-  populateSelect(el("update-status"), STATUSES);
-  populateSelect(el("update-severity"), SEVERITIES);
-
-  populateSelect(el("ni-severity"), SEVERITIES);
-  el("ni-severity").value = "medium";
-  populateSelect(el("ni-category"), CATEGORIES);
-  el("ni-category").value = "other";
+function buildCheckboxGrid(container, options, namePrefix) {
+  container.innerHTML = "";
+  for (const [value, label] of options) {
+    const wrap = document.createElement("label");
+    wrap.className = "checkbox-item";
+    wrap.innerHTML = `<input type="checkbox" value="${value}" data-group="${namePrefix}"> ${escapeHtml(label)}`;
+    container.appendChild(wrap);
+  }
 }
+
+function getCheckedValues(container) {
+  return Array.from(container.querySelectorAll("input[type=checkbox]:checked")).map((i) => i.value);
+}
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str == null ? "" : String(str);
+  return div.innerHTML;
+}
+
+// ---------------------------------------------------------------------
+// Tabs
+// ---------------------------------------------------------------------
+
+function showTab(tab) {
+  const isQueue = tab === "queue";
+  el("view-queue").hidden = !isQueue;
+  el("view-new").hidden = isQueue;
+  el("tab-queue").classList.toggle("active", isQueue);
+  el("tab-new").classList.toggle("active", !isQueue);
+}
+
+// ---------------------------------------------------------------------
+// Queue list
+// ---------------------------------------------------------------------
 
 function buildQuery() {
   const params = new URLSearchParams();
   if (state.filters.status) params.set("status", state.filters.status);
-  if (state.filters.severity) params.set("severity", state.filters.severity);
   if (state.filters.category) params.set("category", state.filters.category);
+  if (state.filters.site_location) params.set("site_location", state.filters.site_location);
   if (state.filters.search) params.set("search", state.filters.search);
   params.set("limit", PAGE_SIZE);
   params.set("offset", state.offset);
@@ -117,7 +188,7 @@ async function loadIncidents() {
   el("list-empty").hidden = true;
   el("incident-table").hidden = true;
   try {
-    const data = await api(`/incidents?${buildQuery()}`);
+    const data = await apiJson(`/incidents?${buildQuery()}`);
     state.items = data.items;
     state.total = data.total;
     renderList();
@@ -145,11 +216,14 @@ function renderList() {
       const tr = document.createElement("tr");
       tr.dataset.id = incident.id;
       if (incident.id === state.selectedId) tr.classList.add("selected");
+      const categoryLabels = (incident.incident_categories || []).map((c) => CATEGORY_LABELS[c] || c).join(", ");
       tr.innerHTML = `
-        <td>${escapeHtml(incident.title)}</td>
-        <td><span class="badge badge-sev-${incident.severity}">${incident.severity}</span></td>
+        <td>
+          <span class="row-title">${escapeHtml(incident.site_location)}</span>
+          <span class="row-sub">${escapeHtml(categoryLabels || incident.incident_type_summary || "—")}</span>
+        </td>
+        <td><span class="badge badge-nature-${incident.nature_of_report}">${humanize(incident.nature_of_report)}</span></td>
         <td><span class="badge badge-status-${incident.status}">${humanize(incident.status)}</span></td>
-        <td><span class="badge badge-neutral">${humanize(incident.category)}</span></td>
         <td>${formatDate(incident.created_at)}</td>
       `;
       tr.addEventListener("click", () => selectIncident(incident.id));
@@ -164,54 +238,194 @@ function renderList() {
   el("next-page").disabled = state.offset + PAGE_SIZE >= state.total;
 }
 
-function escapeHtml(str) {
-  const div = document.createElement("div");
-  div.textContent = str;
-  return div.innerHTML;
-}
+// ---------------------------------------------------------------------
+// Detail panel
+// ---------------------------------------------------------------------
 
 async function selectIncident(id) {
   state.selectedId = id;
-  renderList(); // update row highlighting
+  renderList();
   try {
-    const incident = await api(`/incidents/${id}`);
+    const incident = await apiJson(`/incidents/${id}`);
     renderDetail(incident);
   } catch (err) {
     showToast(`Failed to load incident: ${err.message}`, true);
   }
 }
 
+function renderAttachmentList(container, attachments, incidentId) {
+  container.innerHTML = "";
+  if (!attachments || attachments.length === 0) {
+    container.innerHTML = '<span class="hint">None yet.</span>';
+    return;
+  }
+  for (const a of attachments) {
+    const chip = document.createElement("div");
+    chip.className = "attachment-chip";
+    chip.innerHTML = `
+      <a href="/incidents/${incidentId}/attachments/${a.id}" target="_blank" rel="noopener" title="${escapeHtml(a.filename)}">${escapeHtml(a.filename)}</a>
+      <button type="button" title="Remove" data-attachment-id="${a.id}">✕</button>
+    `;
+    chip.querySelector("button").addEventListener("click", () => deleteAttachment(incidentId, a.id));
+    container.appendChild(chip);
+  }
+}
+
+function renderApprovals(incident) {
+  const grid = el("approvals-grid");
+  grid.innerHTML = "";
+
+  for (const [field, label, roleLabel] of APPROVAL_FIELDS) {
+    const value = incident[field];
+    const card = document.createElement("div");
+    card.className = "approval-card";
+    card.innerHTML = `
+      <h4>${label} (${roleLabel})</h4>
+      <dl id="ao-${field}-view" ${value ? "" : "hidden"}>
+        <div><dt>Name</dt><dd>${escapeHtml(value && value.name)}</dd></div>
+        <div><dt>Position</dt><dd>${escapeHtml(value && value.position)}</dd></div>
+        <div><dt>Date</dt><dd>${escapeHtml(value && value.signed_date)}</dd></div>
+        <div><dt>Signature</dt><dd>${escapeHtml(value && value.signature)}</dd></div>
+      </dl>
+      <p class="hint" id="ao-${field}-empty" ${value ? "hidden" : ""}>Not yet signed.</p>
+      <button type="button" class="btn btn-sm" data-toggle-approval="${field}">${value ? "Edit" : "Sign"}</button>
+      <div class="approval-form" id="ao-${field}-form">
+        <input type="text" placeholder="Name" id="ao-${field}-name" value="${escapeHtml(value && value.name)}">
+        <input type="text" placeholder="Position" id="ao-${field}-position" value="${escapeHtml(value && value.position)}">
+        <input type="date" id="ao-${field}-date" value="${(value && value.signed_date) || todayIso()}">
+        <input type="text" placeholder="Typed signature" id="ao-${field}-signature" value="${escapeHtml(value && value.signature)}">
+        <button type="button" class="btn btn-secondary btn-sm" data-save-approval="${field}">Save</button>
+      </div>
+    `;
+    grid.appendChild(card);
+  }
+
+  grid.querySelectorAll("[data-toggle-approval]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const field = btn.dataset.toggleApproval;
+      el(`ao-${field}-form`).classList.toggle("open");
+    });
+  });
+  grid.querySelectorAll("[data-save-approval]").forEach((btn) => {
+    btn.addEventListener("click", () => saveApproval(btn.dataset.saveApproval));
+  });
+}
+
+async function saveApproval(field) {
+  const incident = state.selectedId ? currentIncident : null;
+  if (!incident) return;
+  const payload = {
+    [field]: {
+      name: el(`ao-${field}-name`).value.trim() || null,
+      position: el(`ao-${field}-position`).value.trim() || null,
+      signed_date: el(`ao-${field}-date`).value || null,
+      signature: el(`ao-${field}-signature`).value.trim() || null,
+    },
+  };
+  try {
+    const updated = await apiJson(`/incidents/${incident.id}`, { method: "PATCH", body: JSON.stringify(payload) });
+    renderDetail(updated);
+    showToast("Sign-off saved.");
+  } catch (err) {
+    showToast(`Failed to save: ${err.message}`, true);
+  }
+}
+
+let currentIncident = null;
+
 function renderDetail(incident) {
+  currentIncident = incident;
   el("detail-empty").hidden = true;
   el("detail-content").hidden = false;
   el("detail-content").dataset.id = incident.id;
 
-  el("detail-title").textContent = incident.title;
-  el("detail-severity").textContent = incident.severity;
-  el("detail-severity").className = `badge badge-sev-${incident.severity}`;
-  el("detail-status").textContent = humanize(incident.status);
-  el("detail-status").className = `badge badge-status-${incident.status}`;
-  el("detail-category").textContent = humanize(incident.category);
+  el("detail-title").textContent = incident.site_location;
+  const statusBadge = el("detail-status");
+  statusBadge.textContent = humanize(incident.status);
+  statusBadge.className = `badge badge-status-${incident.status}`;
+  const natureBadge = el("detail-nature");
+  natureBadge.textContent = humanize(incident.nature_of_report);
+  natureBadge.className = `badge badge-nature-${incident.nature_of_report}`;
 
-  el("detail-description").textContent = incident.description;
+  el("d-department").textContent = incident.department_area || "—";
+  el("d-reported-by").textContent = [incident.reported_by, incident.reported_by_job_title].filter(Boolean).join(" · ") || "—";
+  el("d-reported-via").textContent = humanize(incident.reported_via) + (incident.reported_via_other ? ` (${incident.reported_via_other})` : "");
+  el("d-report-datetime").textContent = `${incident.report_date} ${incident.report_time}`;
+  el("d-exact-location").textContent = incident.exact_location;
+  el("d-incident-datetime").textContent = `${incident.incident_date} ${incident.incident_time}`;
 
-  el("detail-reporter").textContent = incident.reporter_email
-    ? `${incident.reporter_name} (${incident.reporter_email})`
-    : incident.reporter_name;
-  el("detail-systems").textContent = incident.affected_systems.length
-    ? incident.affected_systems.join(", ")
-    : "—";
-  el("detail-tags").textContent = incident.tags.length ? incident.tags.join(", ") : "—";
-  el("detail-created").textContent = formatDate(incident.created_at);
-  el("detail-updated").textContent = formatDate(incident.updated_at);
-  el("detail-resolved").textContent = formatDate(incident.resolved_at);
+  const catWrap = el("d-categories");
+  catWrap.innerHTML = "";
+  const cats = incident.incident_categories || [];
+  if (cats.length === 0) {
+    catWrap.innerHTML = '<span class="hint">None selected.</span>';
+  } else {
+    cats.forEach((c) => {
+      const span = document.createElement("span");
+      span.className = "badge badge-neutral";
+      span.textContent = CATEGORY_LABELS[c] || humanize(c);
+      catWrap.appendChild(span);
+    });
+    if (incident.incident_category_other) {
+      const span = document.createElement("span");
+      span.className = "badge badge-neutral";
+      span.textContent = `Other: ${incident.incident_category_other}`;
+      catWrap.appendChild(span);
+    }
+  }
+
+  const personsBody = el("d-persons-rows");
+  personsBody.innerHTML = "";
+  const persons = incident.involved_persons || [];
+  if (persons.length === 0) {
+    personsBody.innerHTML = '<tr><td colspan="7" class="hint">None recorded.</td></tr>';
+  } else {
+    persons.forEach((p) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${escapeHtml(p.name)}</td>
+        <td>${escapeHtml(p.designation)}</td>
+        <td>${escapeHtml(p.company)}</td>
+        <td>${escapeHtml(p.id_number)}</td>
+        <td>${escapeHtml(p.nationality)}</td>
+        <td>${escapeHtml(p.contact_no)}</td>
+        <td>${escapeHtml(p.gender)}</td>
+      `;
+      personsBody.appendChild(tr);
+    });
+  }
+  el("d-witnesses").textContent = incident.witnesses ? `Witness(es): ${incident.witnesses}` : "";
+
+  el("d-background").textContent = incident.incident_background || "—";
+  el("d-action").textContent = incident.immediate_action_taken || "—";
+  el("d-root-cause").textContent = incident.root_cause || "—";
+  el("d-recommendations").textContent = incident.recommendations || "—";
+  el("d-authorities").textContent = incident.local_authorities_involvement || "—";
+
+  renderAttachmentList(el("d-pictures"), incident.incident_pictures, incident.id);
+  renderAttachmentList(el("d-documents"), incident.supporting_document_files, incident.id);
+
+  const suppWrap = el("d-supporting-checklist");
+  suppWrap.innerHTML = "";
+  const supp = incident.supporting_documents || [];
+  if (supp.length === 0) {
+    suppWrap.innerHTML = '<span class="hint">None checked.</span>';
+  } else {
+    supp.forEach((s) => {
+      const span = document.createElement("span");
+      span.className = "badge badge-neutral";
+      span.textContent = DOCUMENT_LABELS[s] || humanize(s);
+      suppWrap.appendChild(span);
+    });
+  }
 
   el("update-status").value = incident.status;
-  el("update-severity").value = incident.severity;
+
+  renderApprovals(incident);
 
   const timeline = el("detail-timeline");
   timeline.innerHTML = "";
-  const entries = [...incident.timeline].reverse();
+  const entries = [...(incident.timeline || [])].reverse();
   for (const entry of entries) {
     const li = document.createElement("li");
     li.innerHTML = `
@@ -222,20 +436,16 @@ function renderDetail(incident) {
   }
 }
 
-async function saveUpdates() {
+async function saveStatus() {
   const id = el("detail-content").dataset.id;
   if (!id) return;
-  const updates = {
-    status: el("update-status").value,
-    severity: el("update-severity").value,
-  };
   try {
-    const updated = await api(`/incidents/${id}`, {
+    const updated = await apiJson(`/incidents/${id}`, {
       method: "PATCH",
-      body: JSON.stringify(updates),
+      body: JSON.stringify({ status: el("update-status").value }),
     });
     renderDetail(updated);
-    showToast("Incident updated.");
+    showToast("Status updated.");
     loadIncidents();
   } catch (err) {
     showToast(`Update failed: ${err.message}`, true);
@@ -252,10 +462,7 @@ async function addComment(evt) {
     note: el("comment-note").value.trim() || null,
   };
   try {
-    const updated = await api(`/incidents/${id}/timeline`, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
+    const updated = await apiJson(`/incidents/${id}/timeline`, { method: "POST", body: JSON.stringify(payload) });
     renderDetail(updated);
     el("comment-note").value = "";
     showToast("Added to timeline.");
@@ -264,10 +471,10 @@ async function addComment(evt) {
   }
 }
 
-async function deleteIncident() {
+async function deleteIncidentHandler() {
   const id = el("detail-content").dataset.id;
   if (!id) return;
-  if (!confirm("Delete this incident? This cannot be undone.")) return;
+  if (!confirm("Delete this incident report? This cannot be undone.")) return;
   try {
     await api(`/incidents/${id}`, { method: "DELETE" });
     el("detail-content").hidden = true;
@@ -280,48 +487,157 @@ async function deleteIncident() {
   }
 }
 
-function openModal() {
-  el("new-incident-modal").hidden = false;
+async function uploadAttachment(kind) {
+  const id = el("detail-content").dataset.id;
+  if (!id) return;
+  const inputId = kind === "picture" ? "upload-picture-input" : "upload-document-input";
+  const input = el(inputId);
+  const file = input.files[0];
+  if (!file) {
+    showToast("Choose a file first.", true);
+    return;
+  }
+  const formData = new FormData();
+  formData.append("file", file);
+  try {
+    const updated = await api(`/incidents/${id}/attachments?kind=${kind}`, {
+      method: "POST",
+      body: formData,
+    });
+    renderDetail(updated);
+    input.value = "";
+    showToast("Attachment uploaded.");
+  } catch (err) {
+    showToast(`Upload failed: ${err.message}`, true);
+  }
 }
 
-function closeModal() {
-  el("new-incident-modal").hidden = true;
+async function deleteAttachment(incidentId, attachmentId) {
+  if (!confirm("Remove this attachment?")) return;
+  try {
+    const updated = await api(`/incidents/${incidentId}/attachments/${attachmentId}`, { method: "DELETE" });
+    renderDetail(updated);
+    showToast("Attachment removed.");
+  } catch (err) {
+    showToast(`Failed to remove: ${err.message}`, true);
+  }
+}
+
+// ---------------------------------------------------------------------
+// New report form
+// ---------------------------------------------------------------------
+
+function addPersonRow(prefill) {
+  prefill = prefill || {};
+  const idx = state.personRowCount++;
+  const wrap = document.createElement("div");
+  wrap.className = "person-row";
+  wrap.dataset.rowIndex = idx;
+  wrap.innerHTML = `
+    <label>Name<input type="text" class="p-name" maxlength="200" value="${escapeHtml(prefill.name)}"></label>
+    <label>Role<input type="text" class="p-designation" maxlength="200" value="${escapeHtml(prefill.designation)}"></label>
+    <label>Company<input type="text" class="p-company" maxlength="200" value="${escapeHtml(prefill.company)}"></label>
+    <label>ID / Labour card<input type="text" class="p-id" maxlength="100" value="${escapeHtml(prefill.id_number)}"></label>
+    <label>Nationality<input type="text" class="p-nationality" maxlength="100" value="${escapeHtml(prefill.nationality)}"></label>
+    <label>Contact no.<input type="text" class="p-contact" maxlength="50" value="${escapeHtml(prefill.contact_no)}"></label>
+    <button type="button" class="btn btn-danger btn-sm remove-row-btn">✕</button>
+  `;
+  wrap.querySelector(".remove-row-btn").addEventListener("click", () => wrap.remove());
+  el("person-rows").appendChild(wrap);
+}
+
+function collectPersonRows() {
+  return Array.from(el("person-rows").querySelectorAll(".person-row"))
+    .map((row) => ({
+      name: row.querySelector(".p-name").value.trim(),
+      designation: row.querySelector(".p-designation").value.trim() || null,
+      company: row.querySelector(".p-company").value.trim() || null,
+      id_number: row.querySelector(".p-id").value.trim() || null,
+      nationality: row.querySelector(".p-nationality").value.trim() || null,
+      contact_no: row.querySelector(".p-contact").value.trim() || null,
+    }))
+    .filter((p) => p.name);
+}
+
+function resetNewIncidentForm() {
   el("new-incident-form").reset();
-  el("ni-severity").value = "medium";
-  el("ni-category").value = "other";
+  el("person-rows").innerHTML = "";
+  state.personRowCount = 0;
+  addPersonRow();
+  el("ni-prepared-date").value = todayIso();
 }
 
 async function submitNewIncident(evt) {
   evt.preventDefault();
-  const payload = {
-    title: el("ni-title").value.trim(),
-    description: el("ni-description").value.trim(),
-    severity: el("ni-severity").value,
-    category: el("ni-category").value,
-    reporter_name: el("ni-reporter-name").value.trim(),
-    reporter_email: el("ni-reporter-email").value.trim() || null,
-    affected_systems: splitCsv(el("ni-systems").value),
-    tags: splitCsv(el("ni-tags").value),
+
+  const prepared = {
+    name: el("ni-prepared-name").value.trim(),
+    position: el("ni-prepared-position").value.trim(),
+    signed_date: el("ni-prepared-date").value,
+    signature: el("ni-prepared-signature").value.trim(),
   };
+  const hasPrepared = Object.values(prepared).some(Boolean);
+
+  const payload = {
+    site_location: el("ni-site-location").value.trim(),
+    department_area: el("ni-department-area").value.trim() || null,
+    report_date: el("ni-report-date").value,
+    report_time: el("ni-report-time").value,
+    reported_by: el("ni-reported-by").value.trim(),
+    reported_by_job_title: el("ni-reported-by-job-title").value.trim() || null,
+    reported_by_id_no: el("ni-reported-by-id-no").value.trim() || null,
+    reported_via: el("ni-reported-via").value,
+    reported_via_other: el("ni-reported-via-other").value.trim() || null,
+    nature_of_report: el("ni-nature-of-report").value,
+    nature_of_report_other: el("ni-nature-of-report-other").value.trim() || null,
+
+    involved_persons: collectPersonRows(),
+    witnesses: el("ni-witnesses").value.trim() || null,
+
+    incident_type_summary: el("ni-incident-type-summary").value.trim() || null,
+    exact_location: el("ni-exact-location").value.trim(),
+    incident_date: el("ni-incident-date").value,
+    incident_time: el("ni-incident-time").value,
+
+    incident_categories: getCheckedValues(el("ni-categories")),
+    incident_category_other: el("ni-category-other").value.trim() || null,
+
+    incident_background: el("ni-background").value.trim(),
+    immediate_action_taken: el("ni-action").value.trim() || null,
+    root_cause: el("ni-root-cause").value.trim() || null,
+    recommendations: el("ni-recommendations").value.trim() || null,
+    local_authorities_involvement: el("ni-authorities").value.trim() || null,
+
+    supporting_documents: getCheckedValues(el("ni-supporting-documents")),
+    supporting_documents_other: el("ni-supporting-documents-other").value.trim() || null,
+
+    prepared_by: hasPrepared
+      ? { name: prepared.name || null, position: prepared.position || null, signed_date: prepared.signed_date || null, signature: prepared.signature || null }
+      : null,
+  };
+
   try {
-    await api("/incidents", { method: "POST", body: JSON.stringify(payload) });
-    closeModal();
+    const created = await apiJson("/incidents", { method: "POST", body: JSON.stringify(payload) });
     showToast("Incident reported.");
+    resetNewIncidentForm();
+    showTab("queue");
     state.offset = 0;
-    loadIncidents();
+    await loadIncidents();
+    selectIncident(created.id);
   } catch (err) {
     showToast(`Failed to report incident: ${err.message}`, true);
   }
 }
 
-function splitCsv(value) {
-  return value
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
+// ---------------------------------------------------------------------
+// Wiring
+// ---------------------------------------------------------------------
 
 function wireEvents() {
+  el("tab-queue").addEventListener("click", () => showTab("queue"));
+  el("tab-new").addEventListener("click", () => showTab("new"));
+  el("cancel-new-incident").addEventListener("click", () => showTab("queue"));
+
   let searchDebounce;
   el("filter-search").addEventListener("input", (e) => {
     clearTimeout(searchDebounce);
@@ -331,14 +647,17 @@ function wireEvents() {
       loadIncidents();
     }, 300);
   });
-
+  let siteDebounce;
+  el("filter-site").addEventListener("input", (e) => {
+    clearTimeout(siteDebounce);
+    siteDebounce = setTimeout(() => {
+      state.filters.site_location = e.target.value.trim();
+      state.offset = 0;
+      loadIncidents();
+    }, 300);
+  });
   el("filter-status").addEventListener("change", (e) => {
     state.filters.status = e.target.value;
-    state.offset = 0;
-    loadIncidents();
-  });
-  el("filter-severity").addEventListener("change", (e) => {
-    state.filters.severity = e.target.value;
     state.offset = 0;
     loadIncidents();
   });
@@ -357,16 +676,32 @@ function wireEvents() {
     loadIncidents();
   });
 
-  el("new-incident-btn").addEventListener("click", openModal);
-  el("close-modal-btn").addEventListener("click", closeModal);
-  el("cancel-new-incident").addEventListener("click", closeModal);
-  el("new-incident-form").addEventListener("submit", submitNewIncident);
-
-  el("save-updates-btn").addEventListener("click", saveUpdates);
+  el("save-status-btn").addEventListener("click", saveStatus);
   el("comment-form").addEventListener("submit", addComment);
-  el("delete-incident-btn").addEventListener("click", deleteIncident);
+  el("delete-incident-btn").addEventListener("click", deleteIncidentHandler);
+  el("upload-picture-btn").addEventListener("click", () => uploadAttachment("picture"));
+  el("upload-document-btn").addEventListener("click", () => uploadAttachment("document"));
+
+  el("add-person-row-btn").addEventListener("click", () => addPersonRow());
+  el("new-incident-form").addEventListener("submit", submitNewIncident);
+}
+
+function initSelects() {
+  populateSelect(el("filter-status"), STATUSES, { includeEmpty: true, emptyLabel: "All statuses" });
+  populateSelect(el("filter-category"), INCIDENT_CATEGORIES.map((c) => c[0]), {
+    includeEmpty: true,
+    emptyLabel: "All incident types",
+    labels: CATEGORY_LABELS,
+  });
+  populateSelect(el("update-status"), STATUSES);
+
+  populateSelect(el("ni-reported-via"), REPORTED_VIA);
+  populateSelect(el("ni-nature-of-report"), NATURE_OF_REPORT);
+  buildCheckboxGrid(el("ni-categories"), INCIDENT_CATEGORIES, "category");
+  buildCheckboxGrid(el("ni-supporting-documents"), SUPPORTING_DOCUMENTS, "supporting");
 }
 
 initSelects();
 wireEvents();
+resetNewIncidentForm();
 loadIncidents();

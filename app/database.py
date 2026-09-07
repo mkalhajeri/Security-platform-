@@ -34,10 +34,23 @@ async def close_mongo_connection() -> None:
 async def create_indexes(db: AsyncIOMotorDatabase) -> None:
     incidents = db["incidents"]
     await incidents.create_index("status")
-    await incidents.create_index("severity")
-    await incidents.create_index("category")
+    await incidents.create_index("site_location")
+    await incidents.create_index("nature_of_report")
+    await incidents.create_index("incident_categories")
+    await incidents.create_index("incident_date")
     await incidents.create_index("created_at")
-    await incidents.create_index([("title", "text"), ("description", "text")])
+    await incidents.create_index(
+        [
+            ("incident_background", "text"),
+            ("immediate_action_taken", "text"),
+            ("root_cause", "text"),
+            ("recommendations", "text"),
+        ]
+    )
+
+    # Attachment bytes live here, keyed by their own _id; incidents only
+    # embed the metadata (see AttachmentMeta / incident_to_response).
+    await db["attachments"].create_index("incident_id")
 
 
 def get_database() -> AsyncIOMotorDatabase:

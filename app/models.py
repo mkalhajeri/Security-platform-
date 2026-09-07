@@ -1,44 +1,127 @@
-"""Pydantic models for security incidents.
+"""Pydantic models for physical security incident reports.
 
-These define the shape of data accepted by and returned from the API, and
-double as the schema documentation for the `incidents` MongoDB collection.
+These mirror the organization's paper "Security Incident Report" form
+section-for-section, so every field here maps to a labeled box on that
+form. They double as the schema documentation for the `incidents`
+MongoDB collection.
 """
 
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
 from enum import Enum
 
-from pydantic import BaseModel, EmailStr, Field
-
-
-class Severity(str, Enum):
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
-    CRITICAL = "critical"
-
-
-class Status(str, Enum):
-    OPEN = "open"
-    INVESTIGATING = "investigating"
-    CONTAINED = "contained"
-    RESOLVED = "resolved"
-    CLOSED = "closed"
-
-
-class Category(str, Enum):
-    MALWARE = "malware"
-    PHISHING = "phishing"
-    DATA_BREACH = "data_breach"
-    UNAUTHORIZED_ACCESS = "unauthorized_access"
-    DENIAL_OF_SERVICE = "denial_of_service"
-    INSIDER_THREAT = "insider_threat"
-    VULNERABILITY = "vulnerability"
-    POLICY_VIOLATION = "policy_violation"
-    OTHER = "other"
+from pydantic import BaseModel, Field
 
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# ---------------------------------------------------------------------------
+# Enums (each maps to a checkbox group or dropdown on the paper form)
+# ---------------------------------------------------------------------------
+
+
+class Status(str, Enum):
+    """Digital workflow state — not on the paper form, but needed to track
+    a report from filing through sign-off."""
+
+    REPORTED = "reported"
+    UNDER_REVIEW = "under_review"
+    CLOSED = "closed"
+
+
+class Gender(str, Enum):
+    M = "M"
+    F = "F"
+
+
+class ReportedVia(str, Enum):
+    EMAIL = "email"
+    PHONE_CALL = "phone_call"
+    SMS = "sms"
+    WHATSAPP = "whatsapp"
+    OTHER = "other"
+
+
+class NatureOfReport(str, Enum):
+    INCIDENT = "incident"
+    ACCIDENT = "accident"
+    NEAR_MISS = "near_miss"
+    SECURITY = "security"
+    OTHER = "other"
+
+
+class IncidentCategory(str, Enum):
+    """Section 4: Type of Incident (select all that apply)."""
+
+    VEHICLE_ACCIDENT = "vehicle_accident"
+    INJURY = "injury"
+    ILLNESS_MEDICAL = "illness_medical"
+    FIRE_EXPLOSION = "fire_explosion"
+    THEFT = "theft"
+    ATTEMPTED_THEFT = "attempted_theft"
+    VANDALISM_DAMAGE = "vandalism_damage"
+    PROPERTY_DAMAGE = "property_damage"
+    SECURITY_BREACH = "security_breach"
+    HARASSMENT = "harassment"
+    VERBAL_ABUSE = "verbal_abuse"
+    PHYSICAL_ASSAULT = "physical_assault"
+    DRUG_ALCOHOL = "drug_alcohol"
+    TRAFFIC_VIOLATION = "traffic_violation"
+    ENVIRONMENTAL = "environmental"
+    FALL_FROM_HEIGHT = "fall_from_height"
+    ELECTRICAL = "electrical"
+    CHEMICAL_SPILL = "chemical_spill"
+    EQUIPMENT_FAILURE = "equipment_failure"
+    OTHER = "other"
+
+
+class SupportingDocumentType(str, Enum):
+    """Section 11: Supporting Documents."""
+
+    PHOTOS = "photos"
+    CCTV_FOOTAGE = "cctv_footage"
+    MEDICAL_REPORT = "medical_report"
+    WITNESS_STATEMENT = "witness_statement"
+    POLICE_REPORT = "police_report"
+    VEHICLE_REPORT = "vehicle_report"
+    MAINTENANCE_REPORT = "maintenance_report"
+    OTHER = "other"
+
+
+class AttachmentKind(str, Enum):
+    PICTURE = "picture"  # Section 9: Incident Pictures
+    DOCUMENT = "document"  # Section 11: Supporting Documents
+
+
+# ---------------------------------------------------------------------------
+# Sub-objects
+# ---------------------------------------------------------------------------
+
+
+class InvolvedPerson(BaseModel):
+    """Section 2: Involved Person(s) table — one row."""
+
+    name: str = Field(..., min_length=1, max_length=200)
+    designation: str | None = Field(default=None, max_length=200)
+    company: str | None = Field(default=None, max_length=200)
+    id_number: str | None = Field(default=None, max_length=100, description="ID No. / Labour Card")
+    nationality: str | None = Field(default=None, max_length=100)
+    contact_no: str | None = Field(default=None, max_length=50)
+    gender: Gender | None = None
+
+
+class ApprovalSignOff(BaseModel):
+    """Section 12: one Approvals column (Prepared By / Reviewed By / Approved By).
+
+    Field named `signed_date`, not `date` — naming it `date` would shadow
+    the imported `datetime.date` type within its own annotation.
+    """
+
+    name: str | None = Field(default=None, max_length=200)
+    position: str | None = Field(default=None, max_length=200)
+    signed_date: date | None = None
+    signature: str | None = Field(default=None, max_length=200, description="Typed signature")
 
 
 class TimelineEntry(BaseModel):
@@ -56,44 +139,152 @@ class TimelineEntryCreate(BaseModel):
     note: str | None = Field(default=None, max_length=5000)
 
 
+class AttachmentMeta(BaseModel):
+    """Metadata for a stored file. The bytes live in the `attachments`
+    collection, keyed by `id`; this is what gets embedded on the incident."""
+
+    id: str
+    filename: str
+    content_type: str
+    size: int
+    description: str | None = None
+    uploaded_at: datetime = Field(default_factory=utcnow)
+
+
+# ---------------------------------------------------------------------------
+# Incident: create / update / response
+# ---------------------------------------------------------------------------
+
+
 class IncidentCreate(BaseModel):
-    title: str = Field(..., min_length=1, max_length=300)
-    description: str = Field(..., min_length=1, max_length=10000)
-    severity: Severity = Severity.MEDIUM
-    category: Category = Category.OTHER
-    reporter_name: str = Field(..., min_length=1, max_length=200)
-    reporter_email: EmailStr | None = None
-    affected_systems: list[str] = Field(default_factory=list)
-    tags: list[str] = Field(default_factory=list)
+    # Section 1: Reporting Details
+    site_location: str = Field(..., min_length=1, max_length=200)
+    department_area: str | None = Field(default=None, max_length=200)
+    report_date: date
+    report_time: time
+    reported_by: str = Field(..., min_length=1, max_length=200)
+    reported_by_job_title: str | None = Field(default=None, max_length=200)
+    reported_by_id_no: str | None = Field(default=None, max_length=100)
+    reported_via: ReportedVia
+    reported_via_other: str | None = Field(default=None, max_length=200)
+    nature_of_report: NatureOfReport
+    nature_of_report_other: str | None = Field(default=None, max_length=200)
+
+    # Section 2: Involved Person(s)
+    involved_persons: list[InvolvedPerson] = Field(default_factory=list)
+    witnesses: str | None = Field(default=None, max_length=2000)
+
+    # Section 3: Incident Details
+    incident_type_summary: str | None = Field(default=None, max_length=300)
+    exact_location: str = Field(..., min_length=1, max_length=300)
+    incident_date: date
+    incident_time: time
+
+    # Section 4: Type of Incident
+    incident_categories: list[IncidentCategory] = Field(default_factory=list)
+    incident_category_other: str | None = Field(default=None, max_length=200)
+
+    # Sections 5-8, 10: narrative fields
+    incident_background: str = Field(..., min_length=1, max_length=10000)
+    immediate_action_taken: str | None = Field(default=None, max_length=10000)
+    root_cause: str | None = Field(default=None, max_length=5000)
+    recommendations: str | None = Field(default=None, max_length=5000)
+    local_authorities_involvement: str | None = Field(default=None, max_length=5000)
+
+    # Section 11: Supporting Documents (checkboxes; files uploaded separately)
+    supporting_documents: list[SupportingDocumentType] = Field(default_factory=list)
+    supporting_documents_other: str | None = Field(default=None, max_length=200)
+
+    # Section 12: Approvals — usually only "prepared by" is known at filing time
+    prepared_by: ApprovalSignOff | None = None
 
 
 class IncidentUpdate(BaseModel):
     """All fields optional — only provided fields are changed."""
 
-    title: str | None = Field(default=None, min_length=1, max_length=300)
-    description: str | None = Field(default=None, min_length=1, max_length=10000)
-    severity: Severity | None = None
+    site_location: str | None = Field(default=None, min_length=1, max_length=200)
+    department_area: str | None = Field(default=None, max_length=200)
+    report_date: date | None = None
+    report_time: time | None = None
+    reported_by: str | None = Field(default=None, min_length=1, max_length=200)
+    reported_by_job_title: str | None = Field(default=None, max_length=200)
+    reported_by_id_no: str | None = Field(default=None, max_length=100)
+    reported_via: ReportedVia | None = None
+    reported_via_other: str | None = Field(default=None, max_length=200)
+    nature_of_report: NatureOfReport | None = None
+    nature_of_report_other: str | None = Field(default=None, max_length=200)
+
+    involved_persons: list[InvolvedPerson] | None = None
+    witnesses: str | None = Field(default=None, max_length=2000)
+
+    incident_type_summary: str | None = Field(default=None, max_length=300)
+    exact_location: str | None = Field(default=None, min_length=1, max_length=300)
+    incident_date: date | None = None
+    incident_time: time | None = None
+
+    incident_categories: list[IncidentCategory] | None = None
+    incident_category_other: str | None = Field(default=None, max_length=200)
+
+    incident_background: str | None = Field(default=None, min_length=1, max_length=10000)
+    immediate_action_taken: str | None = Field(default=None, max_length=10000)
+    root_cause: str | None = Field(default=None, max_length=5000)
+    recommendations: str | None = Field(default=None, max_length=5000)
+    local_authorities_involvement: str | None = Field(default=None, max_length=5000)
+
+    supporting_documents: list[SupportingDocumentType] | None = None
+    supporting_documents_other: str | None = Field(default=None, max_length=200)
+
     status: Status | None = None
-    category: Category | None = None
-    affected_systems: list[str] | None = None
-    tags: list[str] | None = None
+    prepared_by: ApprovalSignOff | None = None
+    reviewed_by: ApprovalSignOff | None = None
+    approved_by: ApprovalSignOff | None = None
 
 
 class IncidentResponse(BaseModel):
     id: str
-    title: str
-    description: str
-    severity: Severity
     status: Status
-    category: Category
-    reporter_name: str
-    reporter_email: EmailStr | None = None
-    affected_systems: list[str] = Field(default_factory=list)
-    tags: list[str] = Field(default_factory=list)
+
+    site_location: str
+    department_area: str | None = None
+    report_date: date
+    report_time: time
+    reported_by: str
+    reported_by_job_title: str | None = None
+    reported_by_id_no: str | None = None
+    reported_via: ReportedVia
+    reported_via_other: str | None = None
+    nature_of_report: NatureOfReport
+    nature_of_report_other: str | None = None
+
+    involved_persons: list[InvolvedPerson] = Field(default_factory=list)
+    witnesses: str | None = None
+
+    incident_type_summary: str | None = None
+    exact_location: str
+    incident_date: date
+    incident_time: time
+
+    incident_categories: list[IncidentCategory] = Field(default_factory=list)
+    incident_category_other: str | None = None
+
+    incident_background: str
+    immediate_action_taken: str | None = None
+    root_cause: str | None = None
+    recommendations: str | None = None
+    local_authorities_involvement: str | None = None
+
+    incident_pictures: list[AttachmentMeta] = Field(default_factory=list)
+    supporting_documents: list[SupportingDocumentType] = Field(default_factory=list)
+    supporting_documents_other: str | None = None
+    supporting_document_files: list[AttachmentMeta] = Field(default_factory=list)
+
+    prepared_by: ApprovalSignOff | None = None
+    reviewed_by: ApprovalSignOff | None = None
+    approved_by: ApprovalSignOff | None = None
+
     timeline: list[TimelineEntry] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
-    resolved_at: datetime | None = None
 
 
 class IncidentListResponse(BaseModel):

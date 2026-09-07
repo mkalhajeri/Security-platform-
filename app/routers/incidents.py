@@ -1,17 +1,22 @@
-"""CRUD endpoints for security incident reports."""
+"""CRUD + attachment endpoints for physical security incident reports."""
+
+from datetime import date, time
 
 from bson import ObjectId
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.responses import Response
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database import get_database
 from app.models import (
-    Category,
+    AttachmentKind,
+    AttachmentMeta,
+    IncidentCategory,
     IncidentCreate,
     IncidentListResponse,
     IncidentResponse,
     IncidentUpdate,
-    Severity,
+    NatureOfReport,
     Status,
     TimelineEntry,
     TimelineEntryCreate,
@@ -21,10 +26,14 @@ from app.models import (
 
 router = APIRouter(prefix="/incidents", tags=["incidents"])
 
+# Kept well under MongoDB's 16 MiB document limit, with headroom for the
+# rest of the attachment document and BSON overhead.
+MAX_ATTACHMENT_SIZE = 8 * 1024 * 1024
 
-def _object_id_or_404(incident_id: str) -> ObjectId:
+
+def _object_id_or_404(incident_id: str, detail: str = "Incident not found") -> ObjectId:
     if not ObjectId.is_valid(incident_id):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Incident not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
     return ObjectId(incident_id)
 
 
@@ -36,26 +45,46 @@ async def _get_incident_or_404(db: AsyncIOMotorDatabase, incident_id: str) -> di
     return doc
 
 
+def _json_safe(value):
+    """Recursively convert date/time/Enum values to BSON-friendly types.
+
+    BSON has no bare "date" or "time" type (only full datetime), so these
+    are stored as ISO strings and parsed back by the response model.
+    """
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, (date, time)):
+        return value.isoformat()
+    if hasattr(value, "value") and not isinstance(value, (str, int, float, bool)):
+        return value.value
+    return value
+
+
 @router.post("", response_model=IncidentResponse, status_code=status.HTTP_201_CREATED)
 async def create_incident(
     payload: IncidentCreate,
     db: AsyncIOMotorDatabase = Depends(get_database),
 ) -> dict:
     now = utcnow()
-    doc = payload.model_dump()
+    doc = _json_safe(payload.model_dump())
     doc.update(
         {
-            "status": Status.OPEN,
+            "status": Status.REPORTED.value,
+            "incident_pictures": [],
+            "supporting_document_files": [],
+            "reviewed_by": None,
+            "approved_by": None,
             "timeline": [
                 TimelineEntry(
-                    actor=payload.reporter_name,
+                    actor=payload.reported_by,
                     action="created",
                     note="Incident reported.",
                 ).model_dump()
             ],
             "created_at": now,
             "updated_at": now,
-            "resolved_at": None,
         }
     )
     result = await db["incidents"].insert_one(doc)
@@ -67,19 +96,22 @@ async def create_incident(
 async def list_incidents(
     db: AsyncIOMotorDatabase = Depends(get_database),
     status_filter: Status | None = Query(default=None, alias="status"),
-    severity: Severity | None = Query(default=None),
-    category: Category | None = Query(default=None),
-    search: str | None = Query(default=None, description="Full-text search over title/description"),
+    nature_of_report: NatureOfReport | None = Query(default=None),
+    category: IncidentCategory | None = Query(default=None),
+    site_location: str | None = Query(default=None, description="Exact match on site/location"),
+    search: str | None = Query(default=None, description="Full-text search over the narrative sections"),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ) -> dict:
     query: dict = {}
     if status_filter is not None:
         query["status"] = status_filter.value
-    if severity is not None:
-        query["severity"] = severity.value
+    if nature_of_report is not None:
+        query["nature_of_report"] = nature_of_report.value
     if category is not None:
-        query["category"] = category.value
+        query["incident_categories"] = category.value
+    if site_location:
+        query["site_location"] = site_location
     if search:
         query["$text"] = {"$search": search}
 
@@ -108,7 +140,7 @@ async def update_incident(
     oid = _object_id_or_404(incident_id)
     existing = await _get_incident_or_404(db, incident_id)
 
-    updates = payload.model_dump(exclude_unset=True)
+    updates = _json_safe(payload.model_dump(exclude_unset=True))
     if not updates:
         return incident_to_response(existing)
 
@@ -116,32 +148,24 @@ async def update_incident(
     now = utcnow()
 
     if "status" in updates and updates["status"] != existing.get("status"):
-        new_status = updates["status"]
         timeline_additions.append(
             TimelineEntry(
                 actor="system",
                 action="status_change",
-                note=f"Status changed from {existing.get('status')} to {new_status}",
-            ).model_dump()
-        )
-        if new_status in (Status.RESOLVED.value, Status.CLOSED.value):
-            updates["resolved_at"] = now
-        else:
-            updates["resolved_at"] = None
-
-    if "severity" in updates and updates["severity"] != existing.get("severity"):
-        timeline_additions.append(
-            TimelineEntry(
-                actor="system",
-                action="severity_change",
-                note=f"Severity changed from {existing.get('severity')} to {updates['severity']}",
+                note=f"Status changed from {existing.get('status')} to {updates['status']}",
             ).model_dump()
         )
 
-    # Serialize enum values for storage
-    for key in ("status", "severity", "category"):
-        if key in updates and updates[key] is not None:
-            updates[key] = updates[key].value if hasattr(updates[key], "value") else updates[key]
+    for field, label in (("reviewed_by", "Reviewed by"), ("approved_by", "Approved by")):
+        if field in updates and updates[field] and not existing.get(field):
+            name = (updates[field] or {}).get("name") or "someone"
+            timeline_additions.append(
+                TimelineEntry(
+                    actor=name,
+                    action=field,
+                    note=f"{label} {name}",
+                ).model_dump()
+            )
 
     updates["updated_at"] = now
 
@@ -184,3 +208,130 @@ async def delete_incident(
     result = await db["incidents"].delete_one({"_id": oid})
     if result.deleted_count == 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Incident not found")
+    # Attachments have no independent purpose once their incident is gone.
+    await db["attachments"].delete_many({"incident_id": oid})
+
+
+# ---------------------------------------------------------------------------
+# Attachments (Section 9: Incident Pictures, Section 11: Supporting Documents)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/{incident_id}/attachments",
+    response_model=IncidentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_attachment(
+    incident_id: str,
+    kind: AttachmentKind,
+    file: UploadFile = File(...),
+    description: str | None = Form(default=None),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> dict:
+    oid = _object_id_or_404(incident_id)
+    await _get_incident_or_404(db, incident_id)
+
+    data = await file.read()
+    if len(data) == 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty")
+    if len(data) > MAX_ATTACHMENT_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File exceeds the {MAX_ATTACHMENT_SIZE // (1024 * 1024)} MB limit",
+        )
+
+    now = utcnow()
+    attachment_doc = {
+        "incident_id": oid,
+        "kind": kind.value,
+        "filename": file.filename or "upload",
+        "content_type": file.content_type or "application/octet-stream",
+        "size": len(data),
+        "description": description,
+        "data": data,
+        "uploaded_at": now,
+    }
+    result = await db["attachments"].insert_one(attachment_doc)
+
+    # Native datetime, not an ISO string: BSON stores it directly (unlike
+    # the bare date/time fields _json_safe handles elsewhere).
+    meta = AttachmentMeta(
+        id=str(result.inserted_id),
+        filename=attachment_doc["filename"],
+        content_type=attachment_doc["content_type"],
+        size=attachment_doc["size"],
+        description=description,
+        uploaded_at=now,
+    ).model_dump()
+
+    field = "incident_pictures" if kind == AttachmentKind.PICTURE else "supporting_document_files"
+    timeline_entry = TimelineEntry(
+        actor="system",
+        action="attachment_added",
+        note=f"Added {kind.value.replace('_', ' ')}: {attachment_doc['filename']}",
+    ).model_dump()
+
+    await db["incidents"].update_one(
+        {"_id": oid},
+        {
+            "$push": {field: meta, "timeline": timeline_entry},
+            "$set": {"updated_at": now},
+        },
+    )
+    updated = await db["incidents"].find_one({"_id": oid})
+    return incident_to_response(updated)
+
+
+@router.get("/{incident_id}/attachments/{attachment_id}")
+async def get_attachment(
+    incident_id: str,
+    attachment_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> Response:
+    incident_oid = _object_id_or_404(incident_id)
+    attachment_oid = _object_id_or_404(attachment_id, detail="Attachment not found")
+
+    attachment = await db["attachments"].find_one({"_id": attachment_oid, "incident_id": incident_oid})
+    if attachment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
+
+    return Response(
+        content=attachment["data"],
+        media_type=attachment["content_type"],
+        headers={"Content-Disposition": f'inline; filename="{attachment["filename"]}"'},
+    )
+
+
+@router.delete("/{incident_id}/attachments/{attachment_id}", response_model=IncidentResponse)
+async def delete_attachment(
+    incident_id: str,
+    attachment_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> dict:
+    incident_oid = _object_id_or_404(incident_id)
+    attachment_oid = _object_id_or_404(attachment_id, detail="Attachment not found")
+    await _get_incident_or_404(db, incident_id)
+
+    result = await db["attachments"].delete_one({"_id": attachment_oid, "incident_id": incident_oid})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
+
+    now = utcnow()
+    await db["incidents"].update_one(
+        {"_id": incident_oid},
+        {
+            "$pull": {
+                "incident_pictures": {"id": attachment_id},
+                "supporting_document_files": {"id": attachment_id},
+            },
+            "$push": {
+                "timeline": TimelineEntry(
+                    actor="system", action="attachment_removed", note="Removed an attachment."
+                ).model_dump()
+            },
+            "$set": {"updated_at": now},
+        },
+    )
+    updated = await db["incidents"].find_one({"_id": incident_oid})
+    return incident_to_response(updated)
