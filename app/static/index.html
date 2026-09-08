@@ -24,7 +24,7 @@
         <p class="hint" id="login-error" style="color:var(--danger);" hidden></p>
         <button type="submit" class="btn btn-accent" style="width:100%;">Log in</button>
       </form>
-      <p class="hint" style="margin-top:1rem;">No public sign-up — accounts are created by an admin for security department staff.</p>
+      <p class="hint" style="margin-top:1rem;">No public sign-up — accounts are created by an admin or management-level user for security department staff.</p>
     </div>
   </main>
 
@@ -410,14 +410,14 @@
     </section>
   </main>
 
-  <!-- ============================= USERS VIEW (admin only) ============================= -->
+  <!-- ============================= USERS VIEW (Admin & Management) ============================= -->
   <main class="view" id="view-users" hidden>
     <div class="layout" style="grid-template-columns: minmax(0,1fr) minmax(0,0.7fr);">
       <section class="panel">
         <div class="panel-header">
           <h2>Accounts <span id="users-count" class="count-pill">0</span></h2>
         </div>
-        <p class="hint" style="padding-top:0;">No public sign-up — create an account for each security department staff member below.</p>
+        <p class="hint" style="padding-top:0;">No public sign-up — create an account for each security department staff member below. Management-level accounts can create/edit/deactivate Security Officer and Security Supervisor accounts; only an Admin can manage Management or Admin accounts.</p>
         <table class="incident-table responsive-table" id="users-table">
           <thead>
             <tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr>
@@ -447,7 +447,7 @@
     </div>
   </main>
 
-  <!-- ============================= SITES VIEW (admin only) ============================= -->
+  <!-- ============================= SITES VIEW (Admin & Management) ============================= -->
   <main class="view" id="view-sites" hidden>
     <div class="layout" style="grid-template-columns: minmax(0,1fr) minmax(0,0.7fr);">
       <section class="panel">

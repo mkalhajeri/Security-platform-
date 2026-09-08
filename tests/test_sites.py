@@ -28,14 +28,29 @@ async def test_site_code_is_normalized_and_must_be_unique(client):
     assert dup.status_code == 409
 
 
-async def test_non_admin_can_list_but_not_create_sites(client):
-    officer = await as_role(client, "security_officer")
+async def test_officer_and_supervisor_can_list_but_not_create_sites(client):
+    for role in ("security_officer", "security_supervisor"):
+        actor = await as_role(client, role)
+        resp = await actor.get("/sites")
+        assert resp.status_code == 200
 
-    resp = await officer.get("/sites")
+        resp = await actor.post("/sites", json={"code": "ABC", "name": "Some Site"})
+        assert resp.status_code == 403
+
+
+async def test_management_can_create_update_and_delete_sites(client):
+    manager = await as_role(client, "management")
+
+    resp = await manager.post("/sites", json={"code": "MGT", "name": "Management-added Site"})
+    assert resp.status_code == 201, resp.text
+    site = resp.json()
+
+    resp = await manager.patch(f"/sites/{site['id']}", json={"name": "Renamed Site"})
     assert resp.status_code == 200
+    assert resp.json()["name"] == "Renamed Site"
 
-    resp = await officer.post("/sites", json={"code": "ABC", "name": "Some Site"})
-    assert resp.status_code == 403
+    resp = await manager.delete(f"/sites/{site['id']}")
+    assert resp.status_code == 204
 
 
 async def test_deactivated_site_is_hidden_by_default_but_visible_with_flag(client):

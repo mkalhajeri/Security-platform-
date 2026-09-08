@@ -2,7 +2,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.config import get_settings
 from app.main import app
-from tests.conftest import as_role, create_incident
+from tests.conftest import as_role, create_incident, create_user
 
 
 async def unauthenticated_client():
@@ -159,19 +159,76 @@ async def test_admin_can_delete_incident(client):
 
 
 # ---------------------------------------------------------------------------
-# User management is admin-only
+# User management: Admin and Management can provision accounts; Management
+# is restricted to Security Officer / Security Supervisor accounts only —
+# it can't touch a peer Management account or an Admin account, and can't
+# assign either of those roles. Below Management, no one can manage users.
 # ---------------------------------------------------------------------------
 
 
-async def test_non_admin_cannot_manage_users(client):
-    officer = await as_role(client, "security_officer")
-    resp = await officer.get("/users")
+async def test_officer_and_supervisor_cannot_manage_users(client):
+    for role in ("security_officer", "security_supervisor"):
+        actor = await as_role(client, role)
+        resp = await actor.get("/users")
+        assert resp.status_code == 403
+
+        resp = await actor.post(
+            "/users",
+            json={"email": f"new-{role}@example.com", "full_name": "New Person", "role": "security_officer", "password": "Password123!"},
+        )
+        assert resp.status_code == 403
+
+
+async def test_management_can_create_and_manage_junior_accounts(client):
+    manager = await as_role(client, "management", full_name="Nadia Suleiman")
+
+    resp = await manager.post(
+        "/users",
+        json={"email": "junior@example.com", "full_name": "Junior Officer", "role": "security_officer", "password": "Password123!"},
+    )
+    assert resp.status_code == 201, resp.text
+    user_id = resp.json()["id"]
+
+    resp = await manager.get("/users")
+    assert resp.status_code == 200
+    assert any(u["email"] == "junior@example.com" for u in resp.json())
+
+    resp = await manager.patch(f"/users/{user_id}", json={"role": "security_supervisor"})
+    assert resp.status_code == 200
+    assert resp.json()["role"] == "security_supervisor"
+
+    resp = await manager.delete(f"/users/{user_id}")
+    assert resp.status_code == 204
+
+
+async def test_management_cannot_manage_peer_or_admin_accounts(client):
+    manager = await as_role(client, "management", full_name="Nadia Suleiman", email="nadia@example.com")
+    other_manager = (await client.get("/auth/me")).json()  # bootstrap admin, for a same-request baseline
+    peer = await create_user(client, email="peer-mgmt@example.com", full_name="Peer Manager", role="management")
+
+    # Can't touch a peer Management account...
+    resp = await manager.patch(f"/users/{peer['id']}", json={"is_active": False})
     assert resp.status_code == 403
 
-    resp = await officer.post(
+    # ...or an Admin account.
+    resp = await manager.patch(f"/users/{other_manager['id']}", json={"is_active": False})
+    assert resp.status_code == 403
+
+    resp = await manager.delete(f"/users/{peer['id']}")
+    assert resp.status_code == 403
+
+
+async def test_management_cannot_assign_management_or_admin_role(client):
+    manager = await as_role(client, "management")
+    officer = await create_user(client, email="officer2@example.com", full_name="Some Officer", role="security_officer")
+
+    resp = await manager.post(
         "/users",
-        json={"email": "new@example.com", "full_name": "New Person", "role": "security_officer", "password": "Password123!"},
+        json={"email": "wannabe-admin@example.com", "full_name": "Wannabe", "role": "admin", "password": "Password123!"},
     )
+    assert resp.status_code == 403
+
+    resp = await manager.patch(f"/users/{officer['id']}", json={"role": "management"})
     assert resp.status_code == 403
 
 

@@ -128,12 +128,14 @@ a yard, a gate...) — the higher-level place an incident happened at. It's
 kept separate from the incident's own `exact_location` field (Section 3),
 which describes where *within* the site it occurred.
 
-Sites are a small admin-managed registry (`GET/POST/PATCH/DELETE /sites`,
+Sites are a small managed registry (`GET/POST/PATCH/DELETE /sites`,
 mirroring the Users registry), each with a short `code` (e.g. `JAW`) and a
 display `name` (e.g. `Jebel Ali Warehouse`). Any logged-in user can list
-sites (the New Report form needs the active list for its dropdown); only
-an admin can add, rename, or deactivate one. A site's `code` is immutable
-once set, since it seeds every incident number filed against it.
+sites (the New Report form needs the active list for its dropdown); an
+**Admin or Management-level** user can add, rename, deactivate, or delete
+one — see [Adding sites manually](#adding-sites-manually) below. A site's
+`code` is immutable once set, since it seeds every incident number filed
+against it.
 
 When filing a report, the reporting officer either **picks a registered
 site** from the dropdown, or **chooses "Other"** and types a one-off site
@@ -164,12 +166,39 @@ A registered site with existing incidents can't be deleted (`DELETE
 with `{"is_active": false}`), which hides it from the New Report dropdown
 while keeping every past incident's site reference intact.
 
+### Adding sites manually
+
+Covering a new site isn't an AI/backend job — it's a normal admin task an
+Admin or Management-level user does directly, in the web UI or the API,
+whenever a new location needs to be reportable:
+
+1. Log in as an Admin or Management-level account and open the **Sites**
+   tab.
+2. Fill in **New site**: a short `code` (2–10 letters/numbers, e.g. `DXB2`
+   — this seeds that site's incident numbers, so pick something readable
+   and permanent) and a display `name` (e.g. "Dubai Yard 2").
+3. Click **Add site** — it's immediately available in every reporting
+   officer's New Report site dropdown, no restart or deploy involved.
+4. To retire a site later without losing its history, toggle it inactive
+   in the same tab (it disappears from the dropdown but every past
+   incident filed against it is untouched); a site with zero incidents can
+   be deleted outright.
+
+The same thing via the API:
+
+```bash
+curl -X POST http://localhost:8000/sites \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"code": "DXB2", "name": "Dubai Yard 2"}'
+```
+
 ## Authentication & roles
 
 There is **no public sign-up**. This is an internal tool for a specific
-security department, so accounts are provisioned by an admin for named
-staff, and every `/incidents` and `/analytics` endpoint requires a logged-in
-account.
+security department, so accounts are provisioned manually by an Admin or a
+Management-level user for named staff, and every `/incidents` and
+`/analytics` endpoint requires a logged-in account.
 
 **Roles**, matching the paper form's own Section 12 sign-off hierarchy
 (each level also has everything the levels below it have):
@@ -178,13 +207,22 @@ account.
 |---|---|
 | `security_officer` | File and view incident reports; prepare (Section 12 "Prepared By") |
 | `security_supervisor` | + Sign off as "Reviewed By" |
-| `management` | + Sign off as "Approved By" |
-| `admin` | + Delete incidents; create/edit/deactivate/delete user accounts; create/edit/deactivate/delete sites |
+| `management` | + Sign off as "Approved By"; create/edit/deactivate/delete Security Officer and Security Supervisor accounts; create/edit/deactivate/delete sites |
+| `admin` | + Delete incidents; create/edit/deactivate/delete **any** account (including other Management/Admin accounts) |
 
 A sign-off's name and position always come from **whoever is logged in**,
 never from the request body — a Supervisor can't sign a review "as" someone
 else, and the server rejects the attempt at the role check before it ever
 looks at the name field.
+
+**Account management is capped at your own level.** A Management-level
+user can provision and manage Security Officer / Security Supervisor
+accounts, but can never create, edit, or delete a peer Management account
+or an Admin account — nor assign the `management` or `admin` role to
+anyone, including themselves. That ceiling is enforced server-side
+(`app/routers/users.py`'s `_assert_can_manage_role`), not just hidden in
+the UI, so it holds even against a direct API call. Only an Admin can
+manage another Management or Admin account, or grant either role.
 
 **Bootstrap admin:** on first startup, if no admin account exists yet, one
 is created automatically from `ADMIN_EMAIL` / `ADMIN_PASSWORD` /
@@ -197,6 +235,41 @@ Bearer <token>` header), valid for `ACCESS_TOKEN_EXPIRE_MINUTES` (default
 12 hours). There's no refresh-token flow yet — a session simply asks you to
 log in again once it expires.
 
+### Adding user accounts manually
+
+Same principle as sites: bringing on a new staff member is a normal manual
+admin task, not something that depends on AI involvement. An Admin or
+Management-level user does it directly, in the web UI or the API:
+
+1. Log in as an Admin or Management-level account and open the **Users**
+   tab.
+2. Fill in **New account**: full name, email (this is their login), a
+   role, and a temporary password (8+ characters). A Management-level user
+   only sees `security_officer` and `security_supervisor` as assignable
+   roles; an Admin sees all four.
+3. Click **Create account** — hand the new person their email and
+   temporary password through whatever channel your department already
+   uses for that (this app has no email-sending of its own).
+4. The new person logs in with those credentials, then should change the
+   password immediately via **Log in → `/auth/change-password`** (the web
+   UI doesn't yet expose this as its own screen — call it directly, or ask
+   an Admin/Management user to set a fresh password for them via the Users
+   tab).
+5. To offboard someone, deactivate their account (unchecking "Active" in
+   the Users tab, or `PATCH /users/{id}` with `{"is_active": false}`) —
+   their login stops working immediately but their name stays intact on
+   every incident/timeline entry/sign-off they're attached to. Delete only
+   if the account should never come back.
+
+The same thing via the API:
+
+```bash
+curl -X POST http://localhost:8000/users \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"email": "new.officer@example.com", "full_name": "New Officer", "role": "security_officer", "password": "TempPass123!"}'
+```
+
 ## API endpoints
 
 | Method | Path | Auth | Description |
@@ -207,14 +280,14 @@ log in again once it expires.
 | POST | `/auth/login` | — | Log in with `{email, password}`, returns a bearer token + user profile |
 | GET | `/auth/me` | any | Current user's own profile |
 | POST | `/auth/change-password` | any | Change your own password (`{current_password, new_password}`) |
-| POST | `/users` | admin | Create an account (`{email, full_name, role, password}`) |
-| GET | `/users` | admin | List all accounts |
-| PATCH | `/users/{id}` | admin | Update name/role/active-status/password |
-| DELETE | `/users/{id}` | admin | Delete an account |
-| POST | `/sites` | admin | Register a site (`{code, name}`) |
+| POST | `/users` | management+ | Create an account (`{email, full_name, role, password}`). Management can only assign `security_officer`/`security_supervisor` |
+| GET | `/users` | management+ | List all accounts |
+| PATCH | `/users/{id}` | management+ | Update name/role/active-status/password. Management can only touch, or assign, `security_officer`/`security_supervisor` accounts — never a peer Management or an Admin account |
+| DELETE | `/users/{id}` | management+ | Delete an account (same Management ceiling as above) |
+| POST | `/sites` | management+ | Register a site (`{code, name}`) |
 | GET | `/sites` | any | List sites (active only by default; `?include_inactive=true` for all) |
-| PATCH | `/sites/{id}` | admin | Rename or activate/deactivate a site |
-| DELETE | `/sites/{id}` | admin | Delete a site (only if no incident references it — deactivate otherwise) |
+| PATCH | `/sites/{id}` | management+ | Rename or activate/deactivate a site |
+| DELETE | `/sites/{id}` | management+ | Delete a site (only if no incident references it — deactivate otherwise) |
 | POST | `/incidents` | any | Report a new incident. Site is `site_id` (a registered site) or `site_other` (free text); the server assigns `incident_number` |
 | GET | `/incidents` | any | List incidents (filter by `status`, `nature_of_report`, `category`, `site_location`, `site_id`, `incident_number`, `search`; paginate with `limit`/`offset`) |
 | GET | `/incidents/{id}` | any | Get one incident |
@@ -227,7 +300,9 @@ log in again once it expires.
 | GET | `/incidents/{id}/pdf` | any | Download a PDF of the incident matching the paper form's layout (see below) |
 | GET | `/analytics` | any | Statistics: volume trend, breakdowns, top people, repeat patterns (see below) |
 
-"any" means any logged-in account regardless of role.
+"any" means any logged-in account regardless of role. "management+" means
+Management or Admin (Admin unrestricted; Management capped as described
+in [Authentication & roles](#authentication--roles)).
 
 ### Example: log in and report an incident
 

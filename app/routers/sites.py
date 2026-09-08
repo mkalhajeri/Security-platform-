@@ -3,7 +3,8 @@ filed against.
 
 Any logged-in user can list sites — the New Report form needs the active
 list to populate its dropdown — but creating, renaming, or
-deactivating/reactivating a site is admin-only, mirroring routers/users.py.
+deactivating/reactivating/deleting a site needs Management or Admin,
+mirroring the account-management rules in routers/users.py.
 
 A site's `code` seeds every incident number filed against it (see
 app/numbering.py), so it's immutable after creation and a site with
@@ -17,7 +18,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo.errors import DuplicateKeyError
 
-from app.auth import get_current_user, require_admin
+from app.auth import get_current_user, require_min_role
+from app.auth_models import Role
 from app.database import get_database
 from app.site_models import SiteCreate, SitePublic, SiteUpdate, utcnow
 
@@ -38,7 +40,7 @@ def _to_public(doc: dict) -> SitePublic:
     "",
     response_model=SitePublic,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_min_role(Role.MANAGEMENT))],
 )
 async def create_site(
     payload: SiteCreate,
@@ -67,7 +69,7 @@ async def list_sites(
     return [_to_public(doc) async for doc in db["sites"].find(query).sort("name", 1)]
 
 
-@router.patch("/{site_id}", response_model=SitePublic, dependencies=[Depends(require_admin)])
+@router.patch("/{site_id}", response_model=SitePublic, dependencies=[Depends(require_min_role(Role.MANAGEMENT))])
 async def update_site(
     site_id: str,
     payload: SiteUpdate,
@@ -89,7 +91,7 @@ async def update_site(
     return _to_public(doc)
 
 
-@router.delete("/{site_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_admin)])
+@router.delete("/{site_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_min_role(Role.MANAGEMENT))])
 async def delete_site(
     site_id: str,
     db: AsyncIOMotorDatabase = Depends(get_database),

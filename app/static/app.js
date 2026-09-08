@@ -100,6 +100,27 @@ function isAdmin() {
   return hasMinRole("admin");
 }
 
+// Management can provision/manage accounts and sites too, not just Admin —
+// see app/routers/users.py and app/routers/sites.py. Kept as its own
+// helper (rather than inlining hasMinRole("management") everywhere) so the
+// "who can reach the Users/Sites tabs" question reads as one concept.
+function canManageAccounts() {
+  return hasMinRole("management");
+}
+
+// Mirrors app/routers/users.py's _assert_can_manage_role: Admin can act on
+// anyone; Management can only act on accounts below its own level
+// (Security Officer, Security Supervisor) — never a peer Management
+// account or an Admin account. Used to grey out controls the backend
+// would reject anyway, so a Management user doesn't hit a surprise 403.
+function canManageUserRow(targetRole) {
+  return isAdmin() || ROLE_LEVEL[targetRole] < ROLE_LEVEL["management"];
+}
+
+function assignableRoles() {
+  return isAdmin() ? ROLES : ROLES.filter((r) => ROLE_LEVEL[r] < ROLE_LEVEL["management"]);
+}
+
 const state = {
   offset: 0,
   total: 0,
@@ -227,8 +248,8 @@ async function showApp() {
   el("login-screen").hidden = true;
   el("app-shell").hidden = false;
   el("current-user-label").textContent = `${auth.user.full_name} · ${humanize(auth.user.role)}`;
-  el("tab-users").hidden = !isAdmin();
-  el("tab-sites").hidden = !isAdmin();
+  el("tab-users").hidden = !canManageAccounts();
+  el("tab-sites").hidden = !canManageAccounts();
   await loadActiveSitesForForm();
   resetNewIncidentForm(); // now that auth.user is known, prefill "prepared by"
   showTab("queue");
@@ -1089,7 +1110,8 @@ function renderAnalytics(data) {
 }
 
 // ---------------------------------------------------------------------
-// Sites registry — the New Report form's dropdown, plus admin CRUD
+// Sites registry — the New Report form's dropdown, plus CRUD for
+// Admin/Management (see canManageAccounts)
 // ---------------------------------------------------------------------
 
 function populateSiteSelect(select, sites) {
@@ -1191,7 +1213,7 @@ async function submitNewSite(evt) {
 }
 
 // ---------------------------------------------------------------------
-// Users (admin only)
+// Users (Admin and Management — see canManageAccounts/canManageUserRow)
 // ---------------------------------------------------------------------
 
 let usersCache = [];
@@ -1200,6 +1222,10 @@ async function loadUsers() {
   try {
     usersCache = await apiJson("/users");
     renderUsers();
+    // Re-populate each time: a Management viewer only gets to assign roles
+    // below its own level, an Admin viewer gets all of them.
+    populateSelect(el("nu-role"), assignableRoles());
+    el("nu-role").value = "security_officer";
   } catch (err) {
     showToast(`Failed to load accounts: ${err.message}`, true);
   }
@@ -1212,27 +1238,37 @@ function renderUsers() {
 
   usersCache.forEach((u) => {
     const isSelf = u.id === auth.user.id;
+    // A Management viewer can't touch a peer Management or Admin account
+    // at all (mirrors the backend's _assert_can_manage_role) — grey out
+    // every control on that row rather than let them hit a 403.
+    const manageable = canManageUserRow(u.role);
+    const locked = isSelf || !manageable;
     const tr = document.createElement("tr");
+    tr.title = !manageable ? "Only an Admin can manage this account." : "";
     tr.innerHTML = `
       <td data-label="Name">${escapeHtml(u.full_name)}</td>
       <td data-label="Email">${escapeHtml(u.email)}</td>
       <td data-label="Role"></td>
       <td data-label="Status">
         <label style="flex-direction:row;align-items:center;gap:0.4rem;margin:0;">
-          <input type="checkbox" class="u-active" ${u.is_active ? "checked" : ""} ${isSelf ? "disabled" : ""} style="width:auto;">
+          <input type="checkbox" class="u-active" ${u.is_active ? "checked" : ""} ${locked ? "disabled" : ""} style="width:auto;">
           Active
         </label>
       </td>
       <td data-label="">
-        <button type="button" class="btn btn-danger btn-sm u-delete" ${isSelf ? "disabled" : ""}>Delete</button>
+        <button type="button" class="btn btn-danger btn-sm u-delete" ${locked ? "disabled" : ""}>Delete</button>
       </td>
     `;
 
     const roleSelect = document.createElement("select");
     roleSelect.className = "role-select-inline u-role";
-    populateSelect(roleSelect, ROLES);
+    // Always include this row's current role even if it's above what the
+    // viewer could newly assign, so e.g. a Management viewer still sees
+    // "admin" on an Admin's row instead of it silently falling back to the
+    // first option.
+    populateSelect(roleSelect, Array.from(new Set([...assignableRoles(), u.role])));
     roleSelect.value = u.role;
-    if (isSelf) roleSelect.disabled = true;
+    if (locked) roleSelect.disabled = true;
     tr.querySelector('[data-label="Role"]').appendChild(roleSelect);
 
     roleSelect.addEventListener("change", () => updateUser(u.id, { role: roleSelect.value }));
