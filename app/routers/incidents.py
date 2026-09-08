@@ -1,6 +1,7 @@
 """CRUD + attachment endpoints for physical security incident reports."""
 
 from datetime import date, time
+from enum import Enum
 
 from bson import ObjectId
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
@@ -10,6 +11,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.auth import get_current_user, require_min_role
 from app.auth_models import ROLE_LEVEL, Role, UserPublic
 from app.database import get_database
+from app.pdf_export import build_incident_pdf
 from app.models import (
     AttachmentKind,
     AttachmentMeta,
@@ -63,6 +65,18 @@ def _json_safe(value):
 
     BSON has no bare "date" or "time" type (only full datetime), so these
     are stored as ISO strings and parsed back by the response model.
+
+    Every enum here (Status, Gender, ReportedVia, ...) is also a `str`
+    subclass, so `isinstance(value, str)` is already true for them —
+    checking `isinstance(value, Enum)` explicitly (rather than something
+    like "hasattr(value, 'value') and not isinstance(value, str)") is what
+    actually unwraps them to their plain string value. Leaving the raw
+    member in place mostly reads fine (it IS a string), but `str(member)`
+    on a str-mixed Enum prints "ClassName.MEMBER" instead of the value —
+    a latent bug that stays invisible once real MongoDB round-trips the
+    field back as a plain string, but bites the moment something calls
+    str() on it before that round-trip happens (e.g. mongomock in tests,
+    or code — like PDF export — that renders a freshly-built dict).
     """
     if isinstance(value, dict):
         return {k: _json_safe(v) for k, v in value.items()}
@@ -70,7 +84,7 @@ def _json_safe(value):
         return [_json_safe(v) for v in value]
     if isinstance(value, (date, time)):
         return value.isoformat()
-    if hasattr(value, "value") and not isinstance(value, (str, int, float, bool)):
+    if isinstance(value, Enum):
         return value.value
     return value
 
@@ -373,3 +387,39 @@ async def delete_attachment(
     )
     updated = await db["incidents"].find_one({"_id": incident_oid})
     return incident_to_response(updated)
+
+
+# ---------------------------------------------------------------------------
+# PDF export (Section-for-section facsimile of the paper form)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{incident_id}/pdf")
+async def export_incident_pdf(
+    incident_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> Response:
+    oid = _object_id_or_404(incident_id)
+    doc = await _get_incident_or_404(db, incident_id)
+    incident = incident_to_response(doc)
+
+    # Only image attachments get embedded in the PDF; fetch just those
+    # bytes rather than every attachment on the incident.
+    picture_ids = [
+        ObjectId(p["id"])
+        for p in incident.get("incident_pictures", [])
+        if ObjectId.is_valid(p["id"]) and (p.get("content_type") or "").startswith("image/")
+    ]
+    picture_bytes: dict[str, bytes] = {}
+    if picture_ids:
+        cursor = db["attachments"].find({"_id": {"$in": picture_ids}, "incident_id": oid})
+        async for attachment in cursor:
+            picture_bytes[str(attachment["_id"])] = attachment["data"]
+
+    pdf_bytes = build_incident_pdf(incident, picture_bytes)
+    filename = f"incident-report-{incident_id}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )

@@ -403,6 +403,26 @@ async function openAttachment(incidentId, attachmentId, filename) {
   }
 }
 
+async function downloadIncidentPdf(incidentId) {
+  try {
+    const resp = await fetch(`/incidents/${incidentId}/pdf`, {
+      headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : {},
+    });
+    if (resp.status === 401) {
+      logout();
+      showToast("Your session has ended — please log in again.", true);
+      return;
+    }
+    if (!resp.ok) throw new Error(`Request failed (${resp.status})`);
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    window.open(url, "_blank", "noopener");
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (err) {
+    showToast(`Failed to generate PDF: ${err.message}`, true);
+  }
+}
+
 function renderAttachmentList(container, attachments, incidentId) {
   container.innerHTML = "";
   if (!attachments || attachments.length === 0) {
@@ -1200,6 +1220,7 @@ function wireEvents() {
 
   el("save-status-btn").addEventListener("click", saveStatus);
   el("comment-form").addEventListener("submit", addComment);
+  el("download-pdf-btn").addEventListener("click", () => downloadIncidentPdf(el("detail-content").dataset.id));
   el("delete-incident-btn").addEventListener("click", deleteIncidentHandler);
   el("upload-picture-btn").addEventListener("click", () => uploadAttachment("picture"));
   el("upload-document-btn").addEventListener("click", () => uploadAttachment("document"));

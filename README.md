@@ -16,6 +16,7 @@ FastAPI app and MongoDB database over time.
 - **UI:** Static HTML/CSS/vanilla JS single-page app, served directly by the API — no build step, no external dependencies
 - **Database:** MongoDB, accessed asynchronously via [Motor](https://motor.readthedocs.io/)
 - **File storage:** Incident photos and supporting documents are stored as binary data in MongoDB (an `attachments` collection), capped at 8 MB per file — no separate object storage needed
+- **PDF export:** [ReportLab](https://pypi.org/project/reportlab/) + [Pillow](https://pypi.org/project/Pillow/) render a stored incident back into a PDF matching the paper form's own section layout — no system libraries needed (unlike HTML-to-PDF tools), which keeps the Docker image lean
 - **Tests:** pytest + httpx, against an in-memory MongoDB mock (no real database needed to run the test suite)
 
 ## Project layout
@@ -28,11 +29,12 @@ app/
   auth.py             Password hashing, JWT issuance/verification, auth dependencies
   auth_models.py       Pydantic models for accounts/roles/tokens
   models.py           Pydantic models/schemas for incidents (mirrors the paper form's 12 sections)
+  pdf_export.py        Renders a stored incident to a PDF matching the paper form's layout
   routers/
     health.py         GET /health
     auth.py           POST /auth/login, GET /auth/me, POST /auth/change-password
     users.py          Admin-only account management (create/list/update/delete)
-    incidents.py       Incident CRUD, timeline, and attachment endpoints — all auth-gated
+    incidents.py       Incident CRUD, timeline, attachment, and PDF-export endpoints — all auth-gated
     analytics.py       Statistics: volume trends, top people, repeat patterns — auth-gated
   static/
     index.html        UI layout (login screen, incident queue, new-report form, analytics, users, signature modal)
@@ -43,6 +45,7 @@ tests/
   test_auth.py        Login, role gating, sign-off identity binding, user management
   test_incidents.py   API tests covering incidents and attachments
   test_analytics.py   API tests covering the statistics endpoint
+  test_pdf_export.py  PDF generation, embedded images/signatures, and the enum-stringification regression
 ```
 
 ## Getting started
@@ -174,6 +177,7 @@ log in again once it expires.
 | POST | `/incidents/{id}/attachments?kind=picture\|document` | any | Upload a file (multipart/form-data, field `file`, optional `description`); max 8 MB |
 | GET | `/incidents/{id}/attachments/{attachment_id}` | any | Download/view a file |
 | DELETE | `/incidents/{id}/attachments/{attachment_id}` | any | Remove a file |
+| GET | `/incidents/{id}/pdf` | any | Download a PDF of the incident matching the paper form's layout (see below) |
 | GET | `/analytics` | any | Statistics: volume trend, breakdowns, top people, repeat patterns (see below) |
 
 "any" means any logged-in account regardless of role.
@@ -214,6 +218,22 @@ curl -X POST "http://localhost:8000/incidents/<id>/attachments?kind=picture" \
   -F "description=Dock door 7, wide angle"
 ```
 
+## PDF export
+
+`GET /incidents/{id}/pdf` renders a stored incident back into a PDF using
+the paper form's own section numbers and titles ("SECTION 1: REPORTING
+DETAILS", …, "SECTION 12: APPROVALS") — useful for printing, emailing, or
+filing with authorities/insurance.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" "http://localhost:8000/incidents/<id>/pdf" -o report.pdf
+```
+
+- Up to 6 incident pictures are embedded directly (not just listed by name); any beyond that, or non-image supporting documents, are listed by filename
+- A sign-off's drawn signature image is embedded if present, otherwise its typed signature text is shown
+- A corrupted or unusual image upload is skipped rather than failing the whole PDF — ReportLab defers image decoding until the page is actually drawn, well past any `try`/`except` around building the page, so `app/pdf_export.py` fully decodes every image via Pillow up front
+- The web UI's incident detail view has a "Download PDF" button (fetched with your auth header, since a plain link can't carry one — same pattern as viewing an attachment)
+
 ## Analytics
 
 `GET /analytics` answers the questions a paper log can't: is the same
@@ -250,13 +270,12 @@ repeat patterns.
 
 Incident reporting + storage (matching the paper form), file attachments,
 drawn signature capture, a statistics/analytics layer, role-based
-authentication, a Docker-based local setup, and a web UI are done. Natural
-next steps:
+authentication, PDF export, a Docker-based local setup, and a web UI are
+done. Natural next steps:
 
 - **Reusable per-person signature library** — now that real accounts exist, save a signature once and offer it for reuse on future sign-offs instead of drawing it fresh every time
 - Refresh tokens / session revocation (currently a session just expires after `ACCESS_TOKEN_EXPIRE_MINUTES` and needs a fresh login)
 - Notifications/webhooks on new reports or status changes
-- Reporting/export (e.g. generate a PDF matching the original paper layout from a stored incident)
 - Additional platform modules (patrol logs, access control, asset inventory) sharing the same database
 
 ## Notes on the database driver
