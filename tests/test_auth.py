@@ -287,7 +287,12 @@ async def test_change_own_password(client):
         "/auth/change-password",
         json={"current_password": "OldPassword123!", "new_password": "NewPassword456!"},
     )
-    assert resp.status_code == 204
+    assert resp.status_code == 200
+    # A fresh token pair for the caller — see test_change_password_invalidates_other_sessions
+    # for why (the old ones become invalid the moment the password changes).
+    body = resp.json()
+    assert body["access_token"]
+    assert body["refresh_token"]
 
     anon = await unauthenticated_client()
     resp = await anon.post("/auth/login", json={"email": "pw-test@example.com", "password": "NewPassword456!"})
@@ -371,3 +376,125 @@ async def test_signature_endpoint_requires_authentication(test_db):
     anon = await unauthenticated_client()
     resp = await anon.put("/auth/me/signature", json={"signature_image": None, "signature": None})
     assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Refresh tokens & session revocation
+# ---------------------------------------------------------------------------
+
+
+async def _login(email, password):
+    anon = await unauthenticated_client()
+    resp = await anon.post("/auth/login", json={"email": email, "password": password})
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+async def test_login_returns_a_refresh_token_too(client):
+    await create_user(client, email="refresh1@example.com", full_name="Refresh One", role="security_officer")
+    tokens = await _login("refresh1@example.com", "Password123!")
+    assert tokens["access_token"]
+    assert tokens["refresh_token"]
+    assert tokens["access_token"] != tokens["refresh_token"]
+
+
+async def test_refresh_issues_a_new_access_token(client):
+    await create_user(client, email="refresh2@example.com", full_name="Refresh Two", role="security_officer")
+    tokens = await _login("refresh2@example.com", "Password123!")
+
+    anon = await unauthenticated_client()
+    resp = await anon.post("/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
+    assert resp.status_code == 200
+    new_access = resp.json()["access_token"]
+    assert new_access
+
+    resp = await anon.get("/auth/me", headers={"Authorization": f"Bearer {new_access}"})
+    assert resp.status_code == 200
+    assert resp.json()["email"] == "refresh2@example.com"
+
+
+async def test_refresh_rejects_an_access_token_used_in_its_place(client):
+    await create_user(client, email="refresh3@example.com", full_name="Refresh Three", role="security_officer")
+    tokens = await _login("refresh3@example.com", "Password123!")
+
+    anon = await unauthenticated_client()
+    resp = await anon.post("/auth/refresh", json={"refresh_token": tokens["access_token"]})
+    assert resp.status_code == 401
+
+
+async def test_logout_everywhere_invalidates_access_and_refresh_tokens(client):
+    await create_user(client, email="logout1@example.com", full_name="Logout One", role="security_officer")
+    tokens = await _login("logout1@example.com", "Password123!")
+
+    anon = await unauthenticated_client()
+    anon.headers["Authorization"] = f"Bearer {tokens['access_token']}"
+    resp = await anon.post("/auth/logout-everywhere")
+    assert resp.status_code == 204
+
+    # The very token used to call logout-everywhere is invalid immediately after.
+    resp = await anon.get("/auth/me")
+    assert resp.status_code == 401
+
+    resp = await anon.post("/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
+    assert resp.status_code == 401
+
+
+async def test_change_password_invalidates_other_sessions_but_not_the_caller(client):
+    await create_user(client, email="pwsessions@example.com", full_name="PW Sessions", role="security_officer")
+    device_a = await _login("pwsessions@example.com", "Password123!")
+
+    anon_a = await unauthenticated_client()
+    anon_a.headers["Authorization"] = f"Bearer {device_a['access_token']}"
+    resp = await anon_a.post(
+        "/auth/change-password",
+        json={"current_password": "Password123!", "new_password": "NewPassword456!"},
+    )
+    assert resp.status_code == 200
+    fresh = resp.json()
+
+    # The token used to make the change-password call predates the version
+    # bump, so it's stale now — the caller must switch to the fresh pair
+    # handed back in the response.
+    resp = await anon_a.get("/auth/me")
+    assert resp.status_code == 401
+
+    resp = await anon_a.get("/auth/me", headers={"Authorization": f"Bearer {fresh['access_token']}"})
+    assert resp.status_code == 200
+
+
+async def test_management_can_revoke_junior_account_sessions(client):
+    manager = await as_role(client, "management")
+    officer = await create_user(client, email="revoke1@example.com", full_name="Revoke One", role="security_officer")
+    tokens = await _login("revoke1@example.com", "Password123!")
+
+    resp = await manager.post(f"/users/{officer['id']}/revoke-sessions")
+    assert resp.status_code == 204
+
+    anon = await unauthenticated_client()
+    resp = await anon.get("/auth/me", headers={"Authorization": f"Bearer {tokens['access_token']}"})
+    assert resp.status_code == 401
+
+
+async def test_management_cannot_revoke_peer_or_admin_sessions(client):
+    manager = await as_role(client, "management", email="mgr-revoke@example.com")
+    peer = await create_user(client, email="peer-revoke@example.com", full_name="Peer", role="management")
+    resp = await manager.post(f"/users/{peer['id']}/revoke-sessions")
+    assert resp.status_code == 403
+
+    admin_me = (await client.get("/auth/me")).json()
+    manager2 = await as_role(client, "management", email="mgr-revoke2@example.com")
+    resp = await manager2.post(f"/users/{admin_me['id']}/revoke-sessions")
+    assert resp.status_code == 403
+
+
+async def test_officer_cannot_revoke_sessions(client):
+    officer = await as_role(client, "security_officer")
+    other = await create_user(client, email="target-revoke@example.com", full_name="Target", role="security_officer")
+    resp = await officer.post(f"/users/{other['id']}/revoke-sessions")
+    assert resp.status_code == 403
+
+
+async def test_admin_can_revoke_any_account_sessions(client):
+    manager = await create_user(client, email="mgr-target@example.com", full_name="Target Mgr", role="management")
+    resp = await client.post(f"/users/{manager['id']}/revoke-sessions")
+    assert resp.status_code == 204

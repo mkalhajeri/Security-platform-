@@ -92,8 +92,22 @@ class LoginRequest(BaseModel):
 
 class TokenResponse(BaseModel):
     access_token: str
+    refresh_token: str
     token_type: str = "bearer"
     user: UserPublic
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+class AccessTokenResponse(BaseModel):
+    """Response for POST /auth/refresh — only a new access token; the
+    refresh token itself isn't rotated (see README's Authentication &
+    roles section for why), so the client keeps using the one it has."""
+
+    access_token: str
+    token_type: str = "bearer"
 
 
 class ChangePasswordRequest(BaseModel):

@@ -19,7 +19,12 @@ class Settings(BaseSettings):
     # local dev process and is not a secret.
     jwt_secret_key: str = "dev-insecure-secret-change-me"
     jwt_algorithm: str = "HS256"
-    access_token_expire_minutes: int = 720  # 12 hours
+    # Short-lived by design now that a refresh token exists to renew it
+    # silently — keeps the exposure window small if an access token ever
+    # leaks. Previously 720 (12h) back when there was no refresh flow and
+    # expiry just meant "please log in again."
+    access_token_expire_minutes: int = 30
+    refresh_token_expire_days: int = 14
 
     # Bootstrap admin, created on first startup if no admin exists yet.
     # Change the password immediately after first login.

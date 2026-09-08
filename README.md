@@ -230,10 +230,31 @@ is created automatically from `ADMIN_EMAIL` / `ADMIN_PASSWORD` /
 immediately in any deployment beyond your own machine — the app logs a
 warning on startup if you're still using the default.
 
-**Session tokens:** login returns a JWT bearer token (`Authorization:
-Bearer <token>` header), valid for `ACCESS_TOKEN_EXPIRE_MINUTES` (default
-12 hours). There's no refresh-token flow yet — a session simply asks you to
-log in again once it expires.
+**Session tokens:** login returns two JWTs — an **access token**
+(`Authorization: Bearer <token>` header on every request), short-lived by
+design (`ACCESS_TOKEN_EXPIRE_MINUTES`, default 30 minutes), and a
+**refresh token** (`REFRESH_TOKEN_EXPIRE_DAYS`, default 14 days), sent only
+to `POST /auth/refresh` to get a new access token without re-entering a
+password. The web UI does this automatically the moment a request comes
+back 401 — in normal use a session just keeps working for as long as the
+refresh token is valid, without the 12-hour-token feel of earlier versions
+of this app.
+
+**Revoking a session before it expires:** neither token is looked up in a
+database per request — that's the point of a JWT — so revocation instead
+works through a `token_version` counter on the account, embedded in every
+token it issues. `POST /auth/logout-everywhere` (any user, on their own
+account) and `POST /users/{id}/revoke-sessions` (Admin/Management, same
+hierarchy ceiling as editing/deleting an account — see above) both bump
+it, which instantly invalidates every access/refresh token issued
+before that moment. `POST /auth/change-password` bumps it too — a changed
+password logs out every *other* session — but hands the caller a fresh
+token pair in its response so their own session keeps working. This is
+deliberately all-or-nothing (it can't revoke just one device while leaving
+others logged in) — the pragmatic tradeoff of a single counter over a full
+per-device session store, matching the scale of an internal
+department tool; deactivating an account remains the immediate,
+unconditional kill switch regardless of any of this.
 
 **Reusable signature:** `PUT /auth/me/signature` (any logged-in user, on
 their own account only) saves a drawn or typed signature — `{signature_image,
@@ -272,7 +293,10 @@ Management-level user does it directly, in the web UI or the API:
    the Users tab, or `PATCH /users/{id}` with `{"is_active": false}`) —
    their login stops working immediately but their name stays intact on
    every incident/timeline entry/sign-off they're attached to. Delete only
-   if the account should never come back.
+   if the account should never come back. **Force logout** (in the same
+   row) ends every session they're currently signed in on without
+   deactivating the account — useful right after a role change, or if a
+   device of theirs was lost, without locking them out entirely.
 
 The same thing via the API:
 
@@ -290,14 +314,17 @@ curl -X POST http://localhost:8000/users \
 | GET | `/` | — | Web UI (static SPA) |
 | GET | `/api/info` | — | API name/version metadata |
 | GET | `/health` | — | Liveness/readiness check (pings MongoDB) |
-| POST | `/auth/login` | — | Log in with `{email, password}`, returns a bearer token + user profile |
+| POST | `/auth/login` | — | Log in with `{email, password}`, returns an access token + refresh token + user profile |
+| POST | `/auth/refresh` | — | Exchange `{refresh_token}` for a new access token |
 | GET | `/auth/me` | any | Current user's own profile |
-| POST | `/auth/change-password` | any | Change your own password (`{current_password, new_password}`) |
+| POST | `/auth/change-password` | any | Change your own password (`{current_password, new_password}`); returns a fresh token pair and revokes every other session |
+| POST | `/auth/logout-everywhere` | any | Revoke every access/refresh token issued to your own account so far |
 | PUT | `/auth/me/signature` | any | Save/replace/clear your own reusable signature (`{signature_image, signature}`) |
 | POST | `/users` | management+ | Create an account (`{email, full_name, role, password}`). Management can only assign `security_officer`/`security_supervisor` |
 | GET | `/users` | management+ | List all accounts |
 | PATCH | `/users/{id}` | management+ | Update name/role/active-status/password. Management can only touch, or assign, `security_officer`/`security_supervisor` accounts — never a peer Management or an Admin account |
 | DELETE | `/users/{id}` | management+ | Delete an account (same Management ceiling as above) |
+| POST | `/users/{id}/revoke-sessions` | management+ | Force that account to need a fresh login everywhere, without deactivating it (same Management ceiling as above) |
 | POST | `/sites` | management+ | Register a site (`{code, name}`) |
 | GET | `/sites` | any | List sites (active only by default; `?include_inactive=true` for all) |
 | PATCH | `/sites/{id}` | management+ | Rename or activate/deactivate a site |
@@ -408,11 +435,10 @@ repeat patterns.
 Incident reporting + storage (matching the paper form), file attachments,
 drawn signature capture, a reusable per-person signature library, a
 statistics/analytics layer, role-based authentication (including
-Management-level account/site provisioning), site registry + incident
-numbering, PDF export, a Docker-based local setup, and a web UI are done.
-Natural next steps:
+Management-level account/site provisioning, refresh tokens, and session
+revocation), site registry + incident numbering, PDF export, a
+Docker-based local setup, and a web UI are done. Natural next steps:
 
-- Refresh tokens / session revocation (currently a session just expires after `ACCESS_TOKEN_EXPIRE_MINUTES` and needs a fresh login)
 - Notifications/webhooks on new reports or status changes
 - Additional platform modules (patrol logs, access control, asset inventory) sharing the same database
 

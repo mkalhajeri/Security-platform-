@@ -64,15 +64,16 @@ const PAGE_SIZE = 20;
 // ---------------------------------------------------------------------
 
 const AUTH_STORAGE_KEY = "sp_auth";
-const auth = { token: null, user: null };
+const auth = { token: null, refreshToken: null, user: null };
 
 function loadStoredAuth() {
   try {
     const raw = localStorage.getItem(AUTH_STORAGE_KEY);
     if (!raw) return;
     const parsed = JSON.parse(raw);
-    if (parsed && parsed.token && parsed.user) {
+    if (parsed && parsed.token && parsed.refreshToken && parsed.user) {
       auth.token = parsed.token;
+      auth.refreshToken = parsed.refreshToken;
       auth.user = parsed.user;
     }
   } catch (_) {
@@ -82,14 +83,46 @@ function loadStoredAuth() {
 
 function persistAuth() {
   try {
-    if (auth.token && auth.user) {
-      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ token: auth.token, user: auth.user }));
+    if (auth.token && auth.refreshToken && auth.user) {
+      localStorage.setItem(
+        AUTH_STORAGE_KEY,
+        JSON.stringify({ token: auth.token, refreshToken: auth.refreshToken, user: auth.user })
+      );
     } else {
       localStorage.removeItem(AUTH_STORAGE_KEY);
     }
   } catch (_) {
     // private browsing / storage disabled — session just won't survive a reload
   }
+}
+
+// Access tokens are short-lived by design (ACCESS_TOKEN_EXPIRE_MINUTES) —
+// this exchanges the longer-lived refresh token for a new one the moment
+// a request comes back 401, so a session doesn't just die mid-use. Several
+// 401s arriving at once (e.g. a burst of parallel requests right as the
+// token expires) share one in-flight refresh instead of each firing their
+// own — the API would treat that as fine, but there's no reason to.
+let refreshPromise = null;
+
+async function refreshAccessToken() {
+  if (!auth.refreshToken) return false;
+  if (!refreshPromise) {
+    refreshPromise = fetch("/auth/refresh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: auth.refreshToken }),
+    })
+      .then((resp) => (resp.ok ? resp.json() : null))
+      .catch(() => null)
+      .finally(() => {
+        refreshPromise = null;
+      });
+  }
+  const result = await refreshPromise;
+  if (!result) return false;
+  auth.token = result.access_token;
+  persistAuth();
+  return true;
 }
 
 function hasMinRole(role) {
@@ -163,15 +196,26 @@ function showToast(message, isError = false) {
   }, 4000);
 }
 
-async function api(path, options = {}, { skipAuthRedirect = false } = {}) {
+async function api(path, options = {}, { skipAuthRedirect = false, _retried = false } = {}) {
   const headers = { ...(options.headers || {}) };
   if (auth.token) headers.Authorization = `Bearer ${auth.token}`;
 
   const resp = await fetch(path, { ...options, headers });
 
+  // The access token expired (the common case, every
+  // ACCESS_TOKEN_EXPIRE_MINUTES) — try exchanging the refresh token for a
+  // new one and replay this request exactly once before giving up. Tried
+  // unconditionally (even under skipAuthRedirect, e.g. bootstrapAuth's
+  // /auth/me check) since a successful refresh always resolves things
+  // better than whatever that caller would otherwise do with a 401.
+  if (resp.status === 401 && !_retried && (await refreshAccessToken())) {
+    return api(path, options, { skipAuthRedirect, _retried: true });
+  }
+
   if (resp.status === 401 && !skipAuthRedirect) {
-    // Token missing/expired/invalid, or the account was disabled since
-    // login — there's no recovering from this without logging in again.
+    // Refreshing didn't help either — invalid/expired refresh token, no
+    // refresh token stored, or the account's been deactivated/revoked
+    // since. There's no recovering from this without logging in again.
     logout();
     showToast("Your session has ended — please log in again.", true);
     throw new Error("Session expired");
@@ -264,6 +308,7 @@ async function handleLogin(evt) {
   try {
     const data = await apiJson("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }, { skipAuthRedirect: true });
     auth.token = data.access_token;
+    auth.refreshToken = data.refresh_token;
     auth.user = data.user;
     persistAuth();
     el("login-form").reset();
@@ -276,9 +321,23 @@ async function handleLogin(evt) {
 
 function logout() {
   auth.token = null;
+  auth.refreshToken = null;
   auth.user = null;
   persistAuth();
   showLoginScreen();
+}
+
+async function logoutEverywhere() {
+  if (!confirm("Log out of every device using your account? You'll need to log in again here too.")) return;
+  try {
+    await api("/auth/logout-everywhere", { method: "POST" });
+  } catch (_) {
+    // Even if the request itself failed to round-trip, there's nothing
+    // useful left to do with the current (now-untrusted) tokens — clear
+    // them locally either way.
+  }
+  logout();
+  showToast("Logged out everywhere. Log in again to continue.");
 }
 
 async function bootstrapAuth() {
@@ -288,13 +347,15 @@ async function bootstrapAuth() {
     return;
   }
   try {
-    // Validate the stored token still works (not expired, account not
-    // since-disabled) before trusting the cached user profile.
+    // Validate the stored token still works (not expired — or, if it is,
+    // silently refreshed via the api() layer — account not since-disabled
+    // or had every session revoked) before trusting the cached profile.
     auth.user = await apiJson("/auth/me", {}, { skipAuthRedirect: true });
     persistAuth();
     showApp();
   } catch (_) {
     auth.token = null;
+    auth.refreshToken = null;
     auth.user = null;
     persistAuth();
     showLoginScreen();
@@ -409,14 +470,23 @@ async function selectIncident(id) {
   }
 }
 
+// Binary downloads (attachments, PDF export) go through plain fetch rather
+// than api()/apiJson(), since the response is a blob, not JSON — but they
+// still benefit from the same silent-refresh-on-401 as everything else.
+async function authFetch(path) {
+  let resp = await fetch(path, { headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : {} });
+  if (resp.status === 401 && (await refreshAccessToken())) {
+    resp = await fetch(path, { headers: { Authorization: `Bearer ${auth.token}` } });
+  }
+  return resp;
+}
+
 async function openAttachment(incidentId, attachmentId, filename) {
   // Attachments require the same auth as everything else now, so a plain
   // <a href> won't carry the Authorization header — fetch it ourselves and
   // open the resulting blob instead.
   try {
-    const resp = await fetch(`/incidents/${incidentId}/attachments/${attachmentId}`, {
-      headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : {},
-    });
+    const resp = await authFetch(`/incidents/${incidentId}/attachments/${attachmentId}`);
     if (resp.status === 401) {
       logout();
       showToast("Your session has ended — please log in again.", true);
@@ -434,9 +504,7 @@ async function openAttachment(incidentId, attachmentId, filename) {
 
 async function downloadIncidentPdf(incidentId) {
   try {
-    const resp = await fetch(`/incidents/${incidentId}/pdf`, {
-      headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : {},
-    });
+    const resp = await authFetch(`/incidents/${incidentId}/pdf`);
     if (resp.status === 401) {
       logout();
       showToast("Your session has ended — please log in again.", true);
@@ -1292,6 +1360,7 @@ function renderUsers() {
         </label>
       </td>
       <td data-label="">
+        <button type="button" class="btn btn-sm u-revoke" ${locked ? "disabled" : ""} title="End every session this person is currently logged in on, without deactivating the account">Force logout</button>
         <button type="button" class="btn btn-danger btn-sm u-delete" ${locked ? "disabled" : ""}>Delete</button>
       </td>
     `;
@@ -1310,6 +1379,7 @@ function renderUsers() {
     roleSelect.addEventListener("change", () => updateUser(u.id, { role: roleSelect.value }));
     tr.querySelector(".u-active").addEventListener("change", (e) => updateUser(u.id, { is_active: e.target.checked }));
     tr.querySelector(".u-delete").addEventListener("click", () => deleteUser(u.id, u.full_name));
+    tr.querySelector(".u-revoke").addEventListener("click", () => revokeUserSessions(u.id, u.full_name));
 
     tbody.appendChild(tr);
   });
@@ -1334,6 +1404,16 @@ async function deleteUser(userId, fullName) {
     loadUsers();
   } catch (err) {
     showToast(`Delete failed: ${err.message}`, true);
+  }
+}
+
+async function revokeUserSessions(userId, fullName) {
+  if (!confirm(`End every active session for ${fullName}? Their account stays enabled — they'll just need to log in again.`)) return;
+  try {
+    await api(`/users/${userId}/revoke-sessions`, { method: "POST" });
+    showToast(`${fullName}'s sessions were ended.`);
+  } catch (err) {
+    showToast(`Failed to end sessions: ${err.message}`, true);
   }
 }
 
@@ -1434,6 +1514,7 @@ function wireEvents() {
 
   el("login-form").addEventListener("submit", handleLogin);
   el("logout-btn").addEventListener("click", logout);
+  el("logout-everywhere-btn").addEventListener("click", logoutEverywhere);
 }
 
 function initSelects() {

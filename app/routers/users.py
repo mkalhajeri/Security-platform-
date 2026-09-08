@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo.errors import DuplicateKeyError
 
-from app.auth import hash_password, require_min_role, user_to_public
+from app.auth import bump_token_version, hash_password, require_min_role, user_to_public
 from app.auth_models import ROLE_LEVEL, Role, UserCreate, UserPublic, UserUpdate
 from app.database import get_database
 
@@ -140,3 +140,28 @@ async def delete_user(
     result = await db["users"].delete_one({"_id": oid})
     if result.deleted_count == 0:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
+
+
+@router.post("/{user_id}/revoke-sessions", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_sessions(
+    user_id: str,
+    current_user: UserPublic = Depends(require_min_role(Role.MANAGEMENT)),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> None:
+    """Force this account to need a fresh login everywhere, without
+    deactivating it — e.g. a suspected leaked token, or just routine
+    hygiene right after a role change. Same hierarchy ceiling as edit/
+    delete above: Management can only do this to a junior account.
+    Deactivating an account (PATCH .../is_active=false) already blocks it
+    immediately on its own, so this is for when you want a clean session
+    reset without also locking the account out."""
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
+    oid = ObjectId(user_id)
+
+    target = await db["users"].find_one({"_id": oid})
+    if target is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
+    _assert_can_manage_role(current_user, Role(target["role"]), "revoke sessions for")
+
+    await bump_token_version(db, user_id)

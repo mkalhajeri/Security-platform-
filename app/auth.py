@@ -42,10 +42,22 @@ def verify_password(password: str, hashed: str) -> bool:
 
 # ---------------------------------------------------------------------------
 # JWT
+#
+# Two token types share one secret/algorithm, distinguished by a "type"
+# claim so one can never be used in place of the other: a short-lived
+# "access" token (sent as the Authorization header on every request) and a
+# longer-lived "refresh" token (sent only to POST /auth/refresh to mint a
+# new access token, so a user doesn't have to re-enter their password
+# every ACCESS_TOKEN_EXPIRE_MINUTES).
+#
+# Neither token is looked up in a database on every request — that's the
+# whole appeal of JWTs — so revoking one before it naturally expires needs
+# its own mechanism. That's what the "ver" claim + `token_version` (below)
+# is for.
 # ---------------------------------------------------------------------------
 
 
-def create_access_token(user_id: str, role: Role | str) -> str:
+def _create_token(user_id: str, role: Role | str, token_version: int, token_type: str, expires_delta: timedelta) -> str:
     # Callers pass the raw DB value (a plain string — MongoDB doesn't know
     # about the Role enum) as often as a Role member, so accept either.
     role_value = role.value if isinstance(role, Role) else role
@@ -53,19 +65,67 @@ def create_access_token(user_id: str, role: Role | str) -> str:
     payload = {
         "sub": user_id,
         "role": role_value,
+        "ver": token_version,
+        "type": token_type,
         "iat": now,
-        "exp": now + timedelta(minutes=settings.access_token_expire_minutes),
+        "exp": now + expires_delta,
     }
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
-def _decode_token(token: str) -> dict:
+def create_access_token(user_id: str, role: Role | str, token_version: int = 0) -> str:
+    return _create_token(
+        user_id, role, token_version, "access", timedelta(minutes=settings.access_token_expire_minutes)
+    )
+
+
+def create_refresh_token(user_id: str, role: Role | str, token_version: int = 0) -> str:
+    return _create_token(user_id, role, token_version, "refresh", timedelta(days=settings.refresh_token_expire_days))
+
+
+def decode_token(token: str, expected_type: str) -> dict:
     try:
-        return jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
+        payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
     except jwt.ExpiredSignatureError:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Session expired — please log in again.")
     except jwt.InvalidTokenError:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid authentication token.")
+
+    # A refresh token presented as an access token (or vice versa) decodes
+    # fine — same secret, same algorithm — so the type has to be checked
+    # explicitly, or a long-lived refresh token would work as a permanent
+    # substitute for the short-lived access token it's meant to renew.
+    if payload.get("type") != expected_type:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid authentication token.")
+    return payload
+
+
+async def load_active_user_for_token(db: AsyncIOMotorDatabase, payload: dict) -> dict:
+    """Shared by get_current_user and /auth/refresh: resolve a decoded
+    token payload to a live, active user doc whose token_version still
+    matches — i.e. nothing has revoked this token since it was issued."""
+    user_id = payload.get("sub")
+    if not user_id or not ObjectId.is_valid(user_id):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid authentication token.")
+
+    doc = await db["users"].find_one({"_id": ObjectId(user_id)})
+    if doc is None or not doc.get("is_active", True):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Account not found or disabled.")
+
+    if payload.get("ver", 0) != doc.get("token_version", 0):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Session revoked — please log in again.")
+
+    return doc
+
+
+async def bump_token_version(db: AsyncIOMotorDatabase, user_id: str) -> None:
+    """Invalidate every access/refresh token issued for this user before
+    now, in one atomic step — no token blacklist to store or clean up,
+    since every future request/refresh simply stops matching. This is
+    all-or-nothing (it can't revoke just one device's session), which is
+    the deliberate tradeoff of a version-counter instead of a per-token
+    session store — see README's Authentication & roles section."""
+    await db["users"].update_one({"_id": ObjectId(user_id)}, {"$inc": {"token_version": 1}})
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +150,7 @@ async def ensure_bootstrap_admin(db: AsyncIOMotorDatabase) -> None:
             "role": Role.ADMIN.value,
             "hashed_password": hash_password(settings.admin_password),
             "is_active": True,
+            "token_version": 0,
             "created_at": datetime.now(timezone.utc),
         }
     )
@@ -132,15 +193,8 @@ async def get_current_user(
     if credentials is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not authenticated.")
 
-    payload = _decode_token(credentials.credentials)
-    user_id = payload.get("sub")
-    if not user_id or not ObjectId.is_valid(user_id):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid authentication token.")
-
-    doc = await db["users"].find_one({"_id": ObjectId(user_id)})
-    if doc is None or not doc.get("is_active", True):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Account not found or disabled.")
-
+    payload = decode_token(credentials.credentials, expected_type="access")
+    doc = await load_active_user_for_token(db, payload)
     return user_to_public(doc)
 
 
