@@ -128,9 +128,12 @@ class ApprovalSignOff(BaseModel):
         default=None,
         max_length=300_000,
         description=(
-            "Hand-drawn signature as a base64 PNG data URI (data:image/png;base64,...). "
-            "Not yet tied to a reusable per-person signature library — that needs real "
-            "user accounts first — so each sign-off is drawn fresh."
+            "Hand-drawn signature as a base64 PNG data URI (data:image/png;base64,...), "
+            "captured fresh for this specific sign-off. Independent of the signer's own "
+            "reusable saved signature (UserPublic.saved_signature_image, set via "
+            "PUT /auth/me/signature) — the web UI's signature pad offers that as a "
+            "starting point, but what actually ends up here is whatever was in the pad "
+            "when 'Save signature' was clicked."
         ),
     )
 

@@ -786,8 +786,11 @@ function initSignaturePad() {
   canvas.addEventListener("pointerleave", stop);
 
   el("sig-clear-btn").addEventListener("click", sigClear);
+  el("sig-use-saved-btn").addEventListener("click", () => {
+    if (auth.user && auth.user.saved_signature_image) drawSignatureImage(auth.user.saved_signature_image);
+  });
   el("sig-cancel-btn").addEventListener("click", closeSignatureModal);
-  el("sig-save-btn").addEventListener("click", () => {
+  el("sig-save-btn").addEventListener("click", async () => {
     const result = {
       name: el("sig-name").value.trim() || null,
       position: el("sig-position").value.trim() || null,
@@ -795,10 +798,36 @@ function initSignaturePad() {
       signature: el("sig-typed").value.trim() || null,
       signature_image: sigPad.hasContent ? canvas.toDataURL("image/png") : null,
     };
+    if (el("sig-save-as-mine").checked) {
+      // Best-effort: this is a convenience on top of the actual sign-off,
+      // so a failure here shouldn't block the sign-off itself from saving.
+      try {
+        const updated = await apiJson("/auth/me/signature", {
+          method: "PUT",
+          body: JSON.stringify({ signature_image: result.signature_image, signature: result.signature }),
+        });
+        auth.user = updated;
+        persistAuth();
+      } catch (err) {
+        showToast(`Saved the sign-off, but couldn't save it as your signature: ${err.message}`, true);
+      }
+    }
     const callback = sigPad.onSave;
     closeSignatureModal();
     if (callback) callback(result);
   });
+}
+
+function drawSignatureImage(dataUri) {
+  const img = new Image();
+  img.onload = () => {
+    sigPad.ctx.clearRect(0, 0, sigPad.canvas.width, sigPad.canvas.height);
+    sigPad.ctx.fillStyle = "#ffffff";
+    sigPad.ctx.fillRect(0, 0, sigPad.canvas.width, sigPad.canvas.height);
+    sigPad.ctx.drawImage(img, 0, 0, sigPad.canvas.width, sigPad.canvas.height);
+    sigPad.hasContent = true;
+  };
+  img.src = dataUri;
 }
 
 function openSignatureModal({ title, initial, onSave, lockName = false }) {
@@ -812,17 +841,24 @@ function openSignatureModal({ title, initial, onSave, lockName = false }) {
     : "Draw your signature below, or leave it blank and just type your name.";
   el("sig-position").value = initial.position || "";
   el("sig-date").value = initial.signed_date || todayIso();
-  el("sig-typed").value = initial.signature || "";
+  el("sig-save-as-mine").checked = false;
+
+  const savedImage = auth.user && auth.user.saved_signature_image;
+  el("sig-use-saved-btn").hidden = !savedImage;
+
+  // Reuse this person's saved signature as a starting point whenever this
+  // sign-off doesn't already have its own drawn image — that's the whole
+  // point of saving one. Editing an existing sign-off (initial.signature_image
+  // set) still shows what's actually on it; "Use my saved signature" is
+  // there to switch to the saved one instead, if they want.
+  el("sig-typed").value = initial.signature || (!initial.signature_image && auth.user && auth.user.saved_signature_text) || "";
   sigPad.onSave = onSave;
 
   sigClear();
   if (initial.signature_image) {
-    const img = new Image();
-    img.onload = () => {
-      sigPad.ctx.drawImage(img, 0, 0, sigPad.canvas.width, sigPad.canvas.height);
-      sigPad.hasContent = true;
-    };
-    img.src = initial.signature_image;
+    drawSignatureImage(initial.signature_image);
+  } else if (savedImage) {
+    drawSignatureImage(savedImage);
   }
 
   el("signature-modal").hidden = false;

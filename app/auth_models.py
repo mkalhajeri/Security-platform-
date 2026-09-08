@@ -63,6 +63,26 @@ class UserPublic(BaseModel):
     role: Role
     is_active: bool
     created_at: datetime
+    saved_signature_image: str | None = Field(
+        default=None,
+        description="This person's reusable signature (base64 PNG data URI), set via PUT /auth/me/signature.",
+    )
+    saved_signature_text: str | None = Field(default=None, max_length=200, description="Reusable typed signature.")
+
+
+class SignatureUpdate(BaseModel):
+    """Save or replace the caller's own reusable signature — self-service
+    only, there's no endpoint for setting someone else's. Send both fields
+    null to clear it. Kept separate from UserUpdate since this is something
+    any logged-in person manages for themselves, not an admin/management
+    action on someone else's account."""
+
+    signature_image: str | None = Field(
+        default=None,
+        max_length=300_000,
+        description="Hand-drawn signature as a base64 PNG data URI (data:image/png;base64,...).",
+    )
+    signature: str | None = Field(default=None, max_length=200, description="Typed signature")
 
 
 class LoginRequest(BaseModel):

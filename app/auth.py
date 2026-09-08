@@ -109,7 +109,10 @@ async def ensure_bootstrap_admin(db: AsyncIOMotorDatabase) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _to_public(doc: dict) -> UserPublic:
+def user_to_public(doc: dict) -> UserPublic:
+    """The one place a raw `users` doc becomes a `UserPublic` — shared by
+    every router that hands a user back to the client, so a new field
+    (like the saved-signature ones) only needs adding here."""
     return UserPublic(
         id=str(doc["_id"]),
         email=doc["email"],
@@ -117,6 +120,8 @@ def _to_public(doc: dict) -> UserPublic:
         role=doc["role"],
         is_active=doc["is_active"],
         created_at=doc["created_at"],
+        saved_signature_image=doc.get("saved_signature_image"),
+        saved_signature_text=doc.get("saved_signature_text"),
     )
 
 
@@ -136,7 +141,7 @@ async def get_current_user(
     if doc is None or not doc.get("is_active", True):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Account not found or disabled.")
 
-    return _to_public(doc)
+    return user_to_public(doc)
 
 
 def require_min_role(minimum: Role):

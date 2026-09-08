@@ -4,8 +4,8 @@ from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from app.auth import create_access_token, get_current_user, hash_password, verify_password
-from app.auth_models import ChangePasswordRequest, LoginRequest, TokenResponse, UserPublic
+from app.auth import create_access_token, get_current_user, hash_password, user_to_public, verify_password
+from app.auth_models import ChangePasswordRequest, LoginRequest, SignatureUpdate, TokenResponse, UserPublic
 from app.database import get_database
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -26,15 +26,7 @@ async def login(
         raise HTTPException(status.HTTP_403_FORBIDDEN, "This account has been disabled.")
 
     token = create_access_token(str(doc["_id"]), doc["role"])
-    user = UserPublic(
-        id=str(doc["_id"]),
-        email=doc["email"],
-        full_name=doc["full_name"],
-        role=doc["role"],
-        is_active=doc["is_active"],
-        created_at=doc["created_at"],
-    )
-    return {"access_token": token, "token_type": "bearer", "user": user}
+    return {"access_token": token, "token_type": "bearer", "user": user_to_public(doc)}
 
 
 @router.get("/me", response_model=UserPublic)
@@ -56,3 +48,21 @@ async def change_password(
         {"_id": ObjectId(current_user.id)},
         {"$set": {"hashed_password": hash_password(payload.new_password)}},
     )
+
+
+@router.put("/me/signature", response_model=UserPublic)
+async def update_my_signature(
+    payload: SignatureUpdate,
+    current_user: UserPublic = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> UserPublic:
+    """Save (or clear, by sending both fields null) the caller's own
+    reusable signature — self-service only, mirroring change-password
+    above. Once saved, the web UI's signature pad offers it as a starting
+    point on future sign-offs instead of everyone drawing fresh each time."""
+    await db["users"].update_one(
+        {"_id": ObjectId(current_user.id)},
+        {"$set": {"saved_signature_image": payload.signature_image, "saved_signature_text": payload.signature}},
+    )
+    doc = await db["users"].find_one({"_id": ObjectId(current_user.id)})
+    return user_to_public(doc)

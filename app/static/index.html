@@ -509,7 +509,13 @@
       </div>
       <div class="signature-pad-actions">
         <button type="button" class="btn btn-sm" id="sig-clear-btn">Clear drawing</button>
+        <button type="button" class="btn btn-sm" id="sig-use-saved-btn" hidden>Use my saved signature</button>
       </div>
+
+      <label style="flex-direction:row;align-items:center;gap:0.5rem;">
+        <input type="checkbox" id="sig-save-as-mine" style="width:auto;" />
+        Save this drawing as my signature, for future sign-offs
+      </label>
 
       <div class="modal-actions">
         <button type="button" class="btn btn-ghost" id="sig-cancel-btn">Cancel</button>

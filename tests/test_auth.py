@@ -301,3 +301,73 @@ async def test_change_password_rejects_wrong_current_password(client):
         json={"current_password": "totally-wrong", "new_password": "NewPassword456!"},
     )
     assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Reusable signature (PUT /auth/me/signature) — self-service only
+# ---------------------------------------------------------------------------
+
+
+def _png_data_uri(size_bytes=200):
+    # A real data-URI prefix followed by filler — the endpoint only
+    # constrains length/type, it doesn't decode the image, so this is
+    # enough to exercise the save/clear/limit paths without pulling in
+    # Pillow here too.
+    return "data:image/png;base64," + ("A" * size_bytes)
+
+
+async def test_user_can_save_and_retrieve_own_signature(client):
+    officer = await as_role(client, "security_officer", email="sig1@example.com")
+
+    me = (await officer.get("/auth/me")).json()
+    assert me["saved_signature_image"] is None
+    assert me["saved_signature_text"] is None
+
+    resp = await officer.put(
+        "/auth/me/signature",
+        json={"signature_image": _png_data_uri(), "signature": "J. Doe"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["saved_signature_image"] == _png_data_uri()
+    assert body["saved_signature_text"] == "J. Doe"
+
+    me = (await officer.get("/auth/me")).json()
+    assert me["saved_signature_image"] == _png_data_uri()
+    assert me["saved_signature_text"] == "J. Doe"
+
+
+async def test_user_can_clear_own_signature(client):
+    officer = await as_role(client, "security_officer", email="sig2@example.com")
+    await officer.put("/auth/me/signature", json={"signature_image": _png_data_uri(), "signature": "J. Doe"})
+
+    resp = await officer.put("/auth/me/signature", json={"signature_image": None, "signature": None})
+    assert resp.status_code == 200
+    assert resp.json()["saved_signature_image"] is None
+    assert resp.json()["saved_signature_text"] is None
+
+
+async def test_oversized_signature_image_is_rejected(client):
+    officer = await as_role(client, "security_officer", email="sig3@example.com")
+    resp = await officer.put(
+        "/auth/me/signature",
+        json={"signature_image": _png_data_uri(300_001), "signature": None},
+    )
+    assert resp.status_code == 422
+
+
+async def test_signature_update_only_affects_the_caller(client):
+    alice = await as_role(client, "security_officer", email="alice-sig@example.com", full_name="Alice")
+    bob = await as_role(client, "security_officer", email="bob-sig@example.com", full_name="Bob")
+
+    await alice.put("/auth/me/signature", json={"signature_image": _png_data_uri(), "signature": "Alice"})
+
+    bob_me = (await bob.get("/auth/me")).json()
+    assert bob_me["saved_signature_image"] is None
+    assert bob_me["saved_signature_text"] is None
+
+
+async def test_signature_endpoint_requires_authentication(test_db):
+    anon = await unauthenticated_client()
+    resp = await anon.put("/auth/me/signature", json={"signature_image": None, "signature": None})
+    assert resp.status_code == 401

@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo.errors import DuplicateKeyError
 
-from app.auth import hash_password, require_min_role
+from app.auth import hash_password, require_min_role, user_to_public
 from app.auth_models import ROLE_LEVEL, Role, UserCreate, UserPublic, UserUpdate
 from app.database import get_database
 
@@ -35,17 +35,6 @@ def _assert_can_manage_role(current_user: UserPublic, target_role: Role, action:
             status.HTTP_403_FORBIDDEN,
             f"Management accounts can only {action} Security Officer or Security Supervisor accounts.",
         )
-
-
-def _to_public(doc: dict) -> UserPublic:
-    return UserPublic(
-        id=str(doc["_id"]),
-        email=doc["email"],
-        full_name=doc["full_name"],
-        role=doc["role"],
-        is_active=doc["is_active"],
-        created_at=doc["created_at"],
-    )
 
 
 @router.post("", response_model=UserPublic, status_code=status.HTTP_201_CREATED)
@@ -68,12 +57,12 @@ async def create_user(
     except DuplicateKeyError:
         raise HTTPException(status.HTTP_409_CONFLICT, "An account with this email already exists.")
     doc["_id"] = result.inserted_id
-    return _to_public(doc)
+    return user_to_public(doc)
 
 
 @router.get("", response_model=list[UserPublic])
 async def list_users(db: AsyncIOMotorDatabase = Depends(get_database)) -> list[UserPublic]:
-    return [_to_public(doc) async for doc in db["users"].find().sort("created_at", 1)]
+    return [user_to_public(doc) async for doc in db["users"].find().sort("created_at", 1)]
 
 
 @router.patch("/{user_id}", response_model=UserPublic)
@@ -97,7 +86,7 @@ async def update_user(
 
     updates = payload.model_dump(exclude_unset=True)
     if not updates:
-        return _to_public(target)
+        return user_to_public(target)
 
     if updates.get("role") is not None:
         # ...and checked again against the role it would become, so
@@ -128,7 +117,7 @@ async def update_user(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
 
     doc = await db["users"].find_one({"_id": oid})
-    return _to_public(doc)
+    return user_to_public(doc)
 
 
 @router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)

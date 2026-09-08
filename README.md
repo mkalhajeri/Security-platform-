@@ -32,7 +32,7 @@ app/
   pdf_export.py        Renders a stored incident to a PDF matching the paper form's layout
   routers/
     health.py         GET /health
-    auth.py           POST /auth/login, GET /auth/me, POST /auth/change-password
+    auth.py           POST /auth/login, GET /auth/me, POST /auth/change-password, PUT /auth/me/signature
     users.py          Admin-only account management (create/list/update/delete)
     incidents.py       Incident CRUD, timeline, attachment, and PDF-export endpoints — all auth-gated
     analytics.py       Statistics: volume trends, top people, repeat patterns — auth-gated
@@ -116,7 +116,7 @@ Stored in the `incidents` collection. Section numbers refer to the paper
 | 5–8, 10. Narrative | `incident_background`, `immediate_action_taken`, `root_cause`, `recommendations`, `local_authorities_involvement` | Free text |
 | 9. Incident Pictures | `incident_pictures`: list of attachment metadata `{id, filename, content_type, size, description, uploaded_at}` | Files uploaded separately, see below |
 | 11. Supporting Documents | `supporting_documents`: list of 8 document types (photos, CCTV footage, police report, …) + `supporting_documents_other`; `supporting_document_files`: uploaded file metadata | |
-| 12. Approvals | `prepared_by`, `reviewed_by`, `approved_by`: each `{name, position, signed_date, signature, signature_image}` | `signature` is typed text; `signature_image` is a hand-drawn signature captured on a canvas pad, stored as a base64 PNG data URI (max 300 KB). For `reviewed_by`/`approved_by`, `name`/`position` are always server-set from the signer's account — see [Authentication & roles](#authentication--roles). Not yet a *reusable* per-person signature library (save once, reuse on future documents) — each sign-off is still drawn fresh; see Roadmap. |
+| 12. Approvals | `prepared_by`, `reviewed_by`, `approved_by`: each `{name, position, signed_date, signature, signature_image}` | `signature` is typed text; `signature_image` is a hand-drawn signature captured on a canvas pad, stored as a base64 PNG data URI (max 300 KB), specific to that one sign-off. For `reviewed_by`/`approved_by`, `name`/`position` are always server-set from the signer's account — see [Authentication & roles](#authentication--roles). Independent of the signer's own *reusable* saved signature (`UserPublic.saved_signature_image`, see below) — the signature pad offers that as a starting point, but each sign-off still stores its own copy. |
 | — | `created_by`: `{id, name}` | Who actually filed the record through the system (from their login) — distinct from the free-text `reported_by` paper-form field, which may name someone else (e.g. a supervisor logging what a guard called in) |
 | — | `timeline`: list of `{timestamp, actor, action, note}` | `actor` comes from the logged-in user, not client input. Auto-appended on creation, status changes, sign-offs, and attachment changes; can also be appended to manually |
 | — | `created_at` / `updated_at` (UTC) | Managed by the API |
@@ -235,6 +235,19 @@ Bearer <token>` header), valid for `ACCESS_TOKEN_EXPIRE_MINUTES` (default
 12 hours). There's no refresh-token flow yet — a session simply asks you to
 log in again once it expires.
 
+**Reusable signature:** `PUT /auth/me/signature` (any logged-in user, on
+their own account only) saves a drawn or typed signature — `{signature_image,
+signature}`, same shape and 300 KB limit as a sign-off's own signature
+fields — and returns it on every `GET /auth/me`/`login` response afterward
+as `saved_signature_image`/`saved_signature_text`. The web UI's signature
+pad (used for Prepared By / Reviewed By / Approved By) draws it in as a
+starting point automatically whenever that particular sign-off doesn't
+already have its own image, with a "Use my saved signature" button to pull
+it in on demand and a checkbox to save whatever's currently drawn back to
+the account. Send both fields `null` to clear it. This is separate from any
+individual sign-off's stored `signature_image` — saving a new one here
+doesn't retroactively change past incidents.
+
 ### Adding user accounts manually
 
 Same principle as sites: bringing on a new staff member is a normal manual
@@ -280,6 +293,7 @@ curl -X POST http://localhost:8000/users \
 | POST | `/auth/login` | — | Log in with `{email, password}`, returns a bearer token + user profile |
 | GET | `/auth/me` | any | Current user's own profile |
 | POST | `/auth/change-password` | any | Change your own password (`{current_password, new_password}`) |
+| PUT | `/auth/me/signature` | any | Save/replace/clear your own reusable signature (`{signature_image, signature}`) |
 | POST | `/users` | management+ | Create an account (`{email, full_name, role, password}`). Management can only assign `security_officer`/`security_supervisor` |
 | GET | `/users` | management+ | List all accounts |
 | PATCH | `/users/{id}` | management+ | Update name/role/active-status/password. Management can only touch, or assign, `security_officer`/`security_supervisor` accounts — never a peer Management or an Admin account |
@@ -392,11 +406,12 @@ repeat patterns.
 ## Roadmap
 
 Incident reporting + storage (matching the paper form), file attachments,
-drawn signature capture, a statistics/analytics layer, role-based
-authentication, PDF export, a Docker-based local setup, and a web UI are
-done. Natural next steps:
+drawn signature capture, a reusable per-person signature library, a
+statistics/analytics layer, role-based authentication (including
+Management-level account/site provisioning), site registry + incident
+numbering, PDF export, a Docker-based local setup, and a web UI are done.
+Natural next steps:
 
-- **Reusable per-person signature library** — now that real accounts exist, save a signature once and offer it for reuse on future sign-offs instead of drawing it fresh every time
 - Refresh tokens / session revocation (currently a session just expires after `ACCESS_TOKEN_EXPIRE_MINUTES` and needs a fresh login)
 - Notifications/webhooks on new reports or status changes
 - Additional platform modules (patrol logs, access control, asset inventory) sharing the same database
