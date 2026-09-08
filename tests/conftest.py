@@ -4,7 +4,7 @@ from mongomock_motor import AsyncMongoMockClient
 
 from app.auth import ensure_bootstrap_admin
 from app.config import get_settings
-from app.database import get_database
+from app.database import create_indexes, get_database
 from app.main import app
 
 
@@ -14,6 +14,11 @@ async def test_db():
     db = mock_client["security_platform_test"]
 
     app.dependency_overrides[get_database] = lambda: db
+    # Real deployments create these in connect_to_mongo() at startup, which
+    # ASGITransport-based tests never trigger (no lifespan events) — create
+    # them here so uniqueness constraints (e.g. site code, incident number)
+    # are exercised the same way in tests as in production.
+    await create_indexes(db)
     await ensure_bootstrap_admin(db)
     yield db
     app.dependency_overrides.pop(get_database, None)
@@ -70,7 +75,7 @@ async def as_role(admin_client, role, *, email=None, full_name=None, password="P
 def incident_payload(**overrides):
     """A minimal-but-valid IncidentCreate payload, shared across test modules."""
     payload = {
-        "site_location": "Warehouse 3 — Jebel Ali",
+        "site_other": "Warehouse 3 — Jebel Ali",
         "department_area": "Loading Bay",
         "report_date": "2026-09-07",
         "report_time": "14:30",

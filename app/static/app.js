@@ -105,7 +105,7 @@ const state = {
   total: 0,
   items: [],
   selectedId: null,
-  filters: { status: "", category: "", site_location: "", search: "" },
+  filters: { status: "", category: "", site_location: "", incident_number: "", search: "" },
   personRowCount: 0,
 };
 
@@ -223,11 +223,13 @@ function showLoginScreen() {
   el("app-shell").hidden = true;
 }
 
-function showApp() {
+async function showApp() {
   el("login-screen").hidden = true;
   el("app-shell").hidden = false;
   el("current-user-label").textContent = `${auth.user.full_name} · ${humanize(auth.user.role)}`;
   el("tab-users").hidden = !isAdmin();
+  el("tab-sites").hidden = !isAdmin();
+  await loadActiveSitesForForm();
   resetNewIncidentForm(); // now that auth.user is known, prefill "prepared by"
   showTab("queue");
   loadIncidents();
@@ -287,12 +289,16 @@ function showTab(tab) {
   el("view-new").hidden = tab !== "new";
   el("view-analytics").hidden = tab !== "analytics";
   el("view-users").hidden = tab !== "users";
+  el("view-sites").hidden = tab !== "sites";
   el("tab-queue").classList.toggle("active", tab === "queue");
   el("tab-new").classList.toggle("active", tab === "new");
   el("tab-analytics").classList.toggle("active", tab === "analytics");
   el("tab-users").classList.toggle("active", tab === "users");
+  el("tab-sites").classList.toggle("active", tab === "sites");
   if (tab === "analytics") loadAnalytics();
   if (tab === "users") loadUsers();
+  if (tab === "sites") loadSites();
+  if (tab === "new") loadActiveSitesForForm();
 }
 
 // ---------------------------------------------------------------------
@@ -304,6 +310,7 @@ function buildQuery() {
   if (state.filters.status) params.set("status", state.filters.status);
   if (state.filters.category) params.set("category", state.filters.category);
   if (state.filters.site_location) params.set("site_location", state.filters.site_location);
+  if (state.filters.incident_number) params.set("incident_number", state.filters.incident_number);
   if (state.filters.search) params.set("search", state.filters.search);
   params.set("limit", PAGE_SIZE);
   params.set("offset", state.offset);
@@ -345,6 +352,7 @@ function renderList() {
       if (incident.id === state.selectedId) tr.classList.add("selected");
       const categoryLabels = (incident.incident_categories || []).map((c) => CATEGORY_LABELS[c] || c).join(", ");
       tr.innerHTML = `
+        <td data-label="Incident #"><span class="row-title">${escapeHtml(incident.incident_number)}</span></td>
         <td data-label="Incident">
           <span class="row-title">${escapeHtml(incident.site_location)}</span>
           <span class="row-sub">${escapeHtml(categoryLabels || incident.incident_type_summary || "—")}</span>
@@ -516,6 +524,7 @@ function renderDetail(incident) {
   el("delete-incident-btn").hidden = !isAdmin();
 
   el("detail-title").textContent = incident.site_location;
+  el("detail-number").textContent = incident.incident_number;
   const statusBadge = el("detail-status");
   statusBadge.textContent = humanize(incident.status);
   statusBadge.className = `badge badge-status-${incident.status}`;
@@ -897,8 +906,10 @@ async function submitNewIncident(evt) {
   };
   const hasPrepared = Object.values(prepared).some(Boolean);
 
+  const chosenSiteId = el("ni-site").value;
   const payload = {
-    site_location: el("ni-site-location").value.trim(),
+    site_id: chosenSiteId || null,
+    site_other: chosenSiteId ? null : el("ni-site-other").value.trim() || null,
     department_area: el("ni-department-area").value.trim() || null,
     report_date: el("ni-report-date").value,
     report_time: el("ni-report-time").value,
@@ -1078,6 +1089,108 @@ function renderAnalytics(data) {
 }
 
 // ---------------------------------------------------------------------
+// Sites registry — the New Report form's dropdown, plus admin CRUD
+// ---------------------------------------------------------------------
+
+function populateSiteSelect(select, sites) {
+  select.innerHTML = "";
+  for (const s of sites) {
+    const opt = document.createElement("option");
+    opt.value = s.id;
+    opt.textContent = `${s.name} (${s.code})`;
+    select.appendChild(opt);
+  }
+  const other = document.createElement("option");
+  other.value = "";
+  other.textContent = "Other (specify site name)";
+  select.appendChild(other);
+}
+
+async function loadActiveSitesForForm() {
+  try {
+    const sites = await apiJson("/sites");
+    populateSiteSelect(el("ni-site"), sites);
+  } catch (err) {
+    showToast(`Failed to load sites: ${err.message}`, true);
+  }
+}
+
+let sitesCache = [];
+
+async function loadSites() {
+  try {
+    sitesCache = await apiJson("/sites?include_inactive=true");
+    renderSites();
+  } catch (err) {
+    showToast(`Failed to load sites: ${err.message}`, true);
+  }
+}
+
+function renderSites() {
+  el("sites-count").textContent = sitesCache.length;
+  const tbody = el("sites-rows");
+  tbody.innerHTML = "";
+
+  sitesCache.forEach((s) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td data-label="Code">${escapeHtml(s.code)}</td>
+      <td data-label="Name">${escapeHtml(s.name)}</td>
+      <td data-label="Status">
+        <label style="flex-direction:row;align-items:center;gap:0.4rem;margin:0;">
+          <input type="checkbox" class="s-active" ${s.is_active ? "checked" : ""} style="width:auto;">
+          Active
+        </label>
+      </td>
+      <td data-label="">
+        <button type="button" class="btn btn-danger btn-sm s-delete">Delete</button>
+      </td>
+    `;
+    tr.querySelector(".s-active").addEventListener("change", (e) => updateSite(s.id, { is_active: e.target.checked }));
+    tr.querySelector(".s-delete").addEventListener("click", () => deleteSite(s.id, s.name));
+    tbody.appendChild(tr);
+  });
+}
+
+async function updateSite(siteId, patch) {
+  try {
+    await apiJson(`/sites/${siteId}`, { method: "PATCH", body: JSON.stringify(patch) });
+    showToast("Site updated.");
+    loadSites();
+    loadActiveSitesForForm();
+  } catch (err) {
+    showToast(`Update failed: ${err.message}`, true);
+    loadSites(); // revert any optimistic UI (e.g. a toggled checkbox)
+  }
+}
+
+async function deleteSite(siteId, name) {
+  if (!confirm(`Delete the site "${name}"? Only possible if no incident references it yet.`)) return;
+  try {
+    await api(`/sites/${siteId}`, { method: "DELETE" });
+    showToast("Site deleted.");
+    loadSites();
+    loadActiveSitesForForm();
+  } catch (err) {
+    showToast(`Delete failed: ${err.message}`, true);
+  }
+}
+
+async function submitNewSite(evt) {
+  evt.preventDefault();
+  const payload = { code: el("ns-code").value.trim(), name: el("ns-name").value.trim() };
+  try {
+    await apiJson("/sites", { method: "POST", body: JSON.stringify(payload) });
+    showToast(`Site "${payload.name}" added.`);
+    el("new-site-form").reset();
+    loadSites();
+    loadActiveSitesForForm();
+  } catch (err) {
+    showToast(`Failed to add site: ${err.message}`, true);
+  }
+}
+
+// ---------------------------------------------------------------------
 // Users (admin only)
 // ---------------------------------------------------------------------
 
@@ -1198,6 +1311,15 @@ function wireEvents() {
       loadIncidents();
     }, 300);
   });
+  let numberDebounce;
+  el("filter-number").addEventListener("input", (e) => {
+    clearTimeout(numberDebounce);
+    numberDebounce = setTimeout(() => {
+      state.filters.incident_number = e.target.value.trim();
+      state.offset = 0;
+      loadIncidents();
+    }, 300);
+  });
   el("filter-status").addEventListener("change", (e) => {
     state.filters.status = e.target.value;
     state.offset = 0;
@@ -1234,6 +1356,9 @@ function wireEvents() {
 
   el("tab-users").addEventListener("click", () => showTab("users"));
   el("new-user-form").addEventListener("submit", submitNewUser);
+
+  el("tab-sites").addEventListener("click", () => showTab("sites"));
+  el("new-site-form").addEventListener("submit", submitNewSite);
 
   el("login-form").addEventListener("submit", handleLogin);
   el("logout-btn").addEventListener("click", logout);

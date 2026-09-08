@@ -38,6 +38,7 @@
         <button class="tab-btn" id="tab-new" type="button">+ New Report</button>
         <button class="tab-btn" id="tab-analytics" type="button">Analytics</button>
         <button class="tab-btn" id="tab-users" type="button" hidden>Users</button>
+        <button class="tab-btn" id="tab-sites" type="button" hidden>Sites</button>
       </nav>
       <div class="spacer"></div>
       <span class="hint" id="current-user-label" style="padding:0;margin-right:0.5rem;"></span>
@@ -55,6 +56,7 @@
 
         <div class="filters">
           <input id="filter-search" type="search" placeholder="Search narrative sections…" />
+          <input id="filter-number" type="text" placeholder="Incident # (e.g. JAW-2026)" />
           <select id="filter-status">
             <option value="">All statuses</option>
           </select>
@@ -70,6 +72,7 @@
         <table class="incident-table responsive-table" id="incident-table" hidden>
           <thead>
             <tr>
+              <th>Incident #</th>
               <th>Site / Incident</th>
               <th>Nature</th>
               <th>Status</th>
@@ -92,6 +95,7 @@
         <div id="detail-content" hidden>
           <div class="detail-header">
             <h2 id="detail-title"></h2>
+            <span class="count-pill" id="detail-number"></span>
             <button id="download-pdf-btn" class="btn btn-sm">Download PDF</button>
             <button id="delete-incident-btn" class="btn btn-danger btn-sm">Delete</button>
           </div>
@@ -187,8 +191,11 @@
       <div class="form-section">
         <h2>Section 1 — Reporting details</h2>
         <div class="form-row">
-          <label>Site / Location *
-            <input id="ni-site-location" type="text" required maxlength="200" />
+          <label>Site *
+            <select id="ni-site" required></select>
+          </label>
+          <label>If "Other", specify the site
+            <input id="ni-site-other" type="text" maxlength="200" />
           </label>
           <label>Department / Area
             <input id="ni-department-area" type="text" maxlength="200" />
@@ -435,6 +442,41 @@
             <input type="text" id="nu-password" required minlength="8" placeholder="At least 8 characters">
           </label>
           <button type="submit" class="btn btn-accent" style="width:100%;">Create account</button>
+        </form>
+      </section>
+    </div>
+  </main>
+
+  <!-- ============================= SITES VIEW (admin only) ============================= -->
+  <main class="view" id="view-sites" hidden>
+    <div class="layout" style="grid-template-columns: minmax(0,1fr) minmax(0,0.7fr);">
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Sites <span id="sites-count" class="count-pill">0</span></h2>
+        </div>
+        <p class="hint" style="padding-top:0;">
+          The registered list a reporting officer picks from when filing a report. Each site's code seeds that
+          site's incident numbers (e.g. "JAW-2026-0001"). Deactivate a site to hide it from new reports without
+          losing its history — it can't be deleted once an incident references it.
+        </p>
+        <table class="incident-table responsive-table" id="sites-table">
+          <thead>
+            <tr><th>Code</th><th>Name</th><th>Status</th><th></th></tr>
+          </thead>
+          <tbody id="sites-rows"></tbody>
+        </table>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header"><h2>New site</h2></div>
+        <form id="new-site-form">
+          <label>Code
+            <input type="text" id="ns-code" required maxlength="10" placeholder="e.g. JAW">
+          </label>
+          <label>Name
+            <input type="text" id="ns-name" required maxlength="200" placeholder="e.g. Jebel Ali Warehouse">
+          </label>
+          <button type="submit" class="btn btn-accent" style="width:100%;">Add site</button>
         </form>
       </section>
     </div>

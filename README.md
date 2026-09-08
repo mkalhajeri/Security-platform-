@@ -108,8 +108,8 @@ Stored in the `incidents` collection. Section numbers refer to the paper
 
 | Section | Field(s) | Notes |
 |---|---|---|
-| System | `id`, `status` | `status` is `reported` \| `under_review` \| `closed` — a digital workflow state not on the paper form |
-| 1. Reporting Details | `site_location`, `department_area`, `report_date`, `report_time`, `reported_by`, `reported_by_job_title`, `reported_by_id_no`, `reported_via` (`email`\|`phone_call`\|`sms`\|`whatsapp`\|`other`), `nature_of_report` (`incident`\|`accident`\|`near_miss`\|`security`\|`other`) | |
+| System | `id`, `status`, `incident_number` | `status` is `reported` \| `under_review` \| `closed` — a digital workflow state not on the paper form. `incident_number` (e.g. `JAW-2026-0001`) is a site+year document number assigned once at creation — see [Sites & incident numbering](#sites--incident-numbering) |
+| 1. Reporting Details | `site_id`, `site_code`, `site_location`, `department_area`, `report_date`, `report_time`, `reported_by`, `reported_by_job_title`, `reported_by_id_no`, `reported_via` (`email`\|`phone_call`\|`sms`\|`whatsapp`\|`other`), `nature_of_report` (`incident`\|`accident`\|`near_miss`\|`security`\|`other`) | `site_id`/`site_code`/`site_location` are resolved server-side from the reporter's site choice — see below. `site_location` remains the display name shown throughout the UI, PDF, and analytics |
 | 2. Involved Person(s) | `involved_persons`: list of `{name, designation, company, id_number, nationality, contact_no, gender}`; `witnesses` (free text) | Repeatable rows |
 | 3. Incident Details | `incident_type_summary`, `exact_location`, `incident_date`, `incident_time` | |
 | 4. Type of Incident | `incident_categories`: list of 20 categories (vehicle accident, injury, fire/explosion, theft, security breach, physical assault, …) + `incident_category_other` | Multi-select |
@@ -120,6 +120,49 @@ Stored in the `incidents` collection. Section numbers refer to the paper
 | — | `created_by`: `{id, name}` | Who actually filed the record through the system (from their login) — distinct from the free-text `reported_by` paper-form field, which may name someone else (e.g. a supervisor logging what a guard called in) |
 | — | `timeline`: list of `{timestamp, actor, action, note}` | `actor` comes from the logged-in user, not client input. Auto-appended on creation, status changes, sign-offs, and attachment changes; can also be appended to manually |
 | — | `created_at` / `updated_at` (UTC) | Managed by the API |
+
+## Sites & incident numbering
+
+A **site** is one of the organization's own named facilities (a warehouse,
+a yard, a gate...) — the higher-level place an incident happened at. It's
+kept separate from the incident's own `exact_location` field (Section 3),
+which describes where *within* the site it occurred.
+
+Sites are a small admin-managed registry (`GET/POST/PATCH/DELETE /sites`,
+mirroring the Users registry), each with a short `code` (e.g. `JAW`) and a
+display `name` (e.g. `Jebel Ali Warehouse`). Any logged-in user can list
+sites (the New Report form needs the active list for its dropdown); only
+an admin can add, rename, or deactivate one. A site's `code` is immutable
+once set, since it seeds every incident number filed against it.
+
+When filing a report, the reporting officer either **picks a registered
+site** from the dropdown, or **chooses "Other"** and types a one-off site
+name — both are accepted by `POST /incidents` as `site_id` (a registered
+site's id) or `site_other` (free text), never both. The server resolves
+whichever was given into `site_id` (`null` for "Other"), `site_code`, and
+`site_location` on the stored incident.
+
+That `site_code` plus the incident's year seeds its **incident number** —
+`{SITE_CODE}-{YEAR}-{SEQUENCE}`, e.g. `JAW-2026-0001` — assigned once, at
+creation, and never changed afterward even if the site is edited later.
+The sequence resets every calendar year and is scoped per site, generated
+atomically (a `$inc` against a dedicated `counters` collection) so two
+reports filed for the same site in the same instant can't collide.
+Incidents filed under "Other" all share a single `OTH` numbering prefix
+rather than inventing a code from free text.
+
+The number is searchable/filterable: `GET /incidents?incident_number=JAW-2026`
+matches by exact value or leading prefix. `GET /incidents?site_id=<id>`
+filters to one registered site. Because `site_location` is now either a
+managed site's consistent display name or a genuinely one-off "Other"
+entry, the Analytics `top_sites` breakdown (grouped by `site_location`)
+gives accurate per-site counts without being fragmented by typos or
+spelling variants the way free-text entry used to allow.
+
+A registered site with existing incidents can't be deleted (`DELETE
+/sites/{id}` returns 409) — deactivate it instead (`PATCH /sites/{id}`
+with `{"is_active": false}`), which hides it from the New Report dropdown
+while keeping every past incident's site reference intact.
 
 ## Authentication & roles
 
@@ -136,7 +179,7 @@ account.
 | `security_officer` | File and view incident reports; prepare (Section 12 "Prepared By") |
 | `security_supervisor` | + Sign off as "Reviewed By" |
 | `management` | + Sign off as "Approved By" |
-| `admin` | + Delete incidents; create/edit/deactivate/delete user accounts |
+| `admin` | + Delete incidents; create/edit/deactivate/delete user accounts; create/edit/deactivate/delete sites |
 
 A sign-off's name and position always come from **whoever is logged in**,
 never from the request body — a Supervisor can't sign a review "as" someone
@@ -168,8 +211,12 @@ log in again once it expires.
 | GET | `/users` | admin | List all accounts |
 | PATCH | `/users/{id}` | admin | Update name/role/active-status/password |
 | DELETE | `/users/{id}` | admin | Delete an account |
-| POST | `/incidents` | any | Report a new incident |
-| GET | `/incidents` | any | List incidents (filter by `status`, `nature_of_report`, `category`, `site_location`, `search`; paginate with `limit`/`offset`) |
+| POST | `/sites` | admin | Register a site (`{code, name}`) |
+| GET | `/sites` | any | List sites (active only by default; `?include_inactive=true` for all) |
+| PATCH | `/sites/{id}` | admin | Rename or activate/deactivate a site |
+| DELETE | `/sites/{id}` | admin | Delete a site (only if no incident references it — deactivate otherwise) |
+| POST | `/incidents` | any | Report a new incident. Site is `site_id` (a registered site) or `site_other` (free text); the server assigns `incident_number` |
+| GET | `/incidents` | any | List incidents (filter by `status`, `nature_of_report`, `category`, `site_location`, `site_id`, `incident_number`, `search`; paginate with `limit`/`offset`) |
 | GET | `/incidents/{id}` | any | Get one incident |
 | PATCH | `/incidents/{id}` | any\* | Update fields (partial); status changes and new sign-offs are recorded in the timeline. \*Setting `reviewed_by` needs `security_supervisor`+, `approved_by` needs `management`+ |
 | POST | `/incidents/{id}/timeline` | any | Append a comment (actor is taken from your login) |
@@ -193,7 +240,7 @@ curl -X POST http://localhost:8000/incidents \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-        "site_location": "Warehouse 3 — Jebel Ali",
+        "site_other": "Warehouse 3 — Jebel Ali",
         "department_area": "Loading Bay",
         "report_date": "2026-09-07",
         "report_time": "14:30",
@@ -223,7 +270,8 @@ curl -X POST "http://localhost:8000/incidents/<id>/attachments?kind=picture" \
 `GET /incidents/{id}/pdf` renders a stored incident back into a PDF using
 the paper form's own section numbers and titles ("SECTION 1: REPORTING
 DETAILS", …, "SECTION 12: APPROVALS") — useful for printing, emailing, or
-filing with authorities/insurance.
+filing with authorities/insurance. The incident number appears in the
+document title, the header subtitle, and Section 1.
 
 ```bash
 curl -H "Authorization: Bearer $TOKEN" "http://localhost:8000/incidents/<id>/pdf" -o report.pdf

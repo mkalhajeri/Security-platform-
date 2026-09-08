@@ -35,6 +35,8 @@ async def create_indexes(db: AsyncIOMotorDatabase) -> None:
     incidents = db["incidents"]
     await incidents.create_index("status")
     await incidents.create_index("site_location")
+    await incidents.create_index("site_id")
+    await incidents.create_index("incident_number", unique=True)
     await incidents.create_index("nature_of_report")
     await incidents.create_index("incident_categories")
     await incidents.create_index("incident_date")
@@ -51,6 +53,10 @@ async def create_indexes(db: AsyncIOMotorDatabase) -> None:
     # Attachment bytes live here, keyed by their own _id; incidents only
     # embed the metadata (see AttachmentMeta / incident_to_response).
     await db["attachments"].create_index("incident_id")
+
+    # Sites registry (see app/site_models.py): code is what seeds incident
+    # numbers (app/numbering.py), so it must be unique.
+    await db["sites"].create_index("code", unique=True)
 
 
 def get_database() -> AsyncIOMotorDatabase:

@@ -13,7 +13,7 @@ async def test_analytics_empty(client):
 async def test_analytics_trend_and_breakdowns(client):
     await create_incident(
         client,
-        site_location="Gate A",
+        site_other="Gate A",
         reported_by="Omar",
         incident_date="2026-01-05",
         incident_categories=["theft"],
@@ -21,7 +21,7 @@ async def test_analytics_trend_and_breakdowns(client):
     )
     await create_incident(
         client,
-        site_location="Gate A",
+        site_other="Gate A",
         reported_by="Omar",
         incident_date="2026-01-20",
         incident_categories=["theft"],
@@ -29,7 +29,7 @@ async def test_analytics_trend_and_breakdowns(client):
     )
     await create_incident(
         client,
-        site_location="Gate A",
+        site_other="Gate A",
         reported_by="Lina",
         incident_date="2026-02-10",
         incident_categories=["theft"],
@@ -37,7 +37,7 @@ async def test_analytics_trend_and_breakdowns(client):
     )
     await create_incident(
         client,
-        site_location="Warehouse",
+        site_other="Warehouse",
         reported_by="Marcus",
         incident_date="2026-04-01",
         incident_categories=["fire_explosion"],

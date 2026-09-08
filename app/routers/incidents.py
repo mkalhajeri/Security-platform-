@@ -1,5 +1,6 @@
 """CRUD + attachment endpoints for physical security incident reports."""
 
+import re
 from datetime import date, time
 from enum import Enum
 
@@ -11,6 +12,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.auth import get_current_user, require_min_role
 from app.auth_models import ROLE_LEVEL, Role, UserPublic
 from app.database import get_database
+from app.numbering import OTHER_SITE_CODE, next_incident_number
 from app.pdf_export import build_incident_pdf
 from app.models import (
     AttachmentKind,
@@ -60,6 +62,33 @@ async def _get_incident_or_404(db: AsyncIOMotorDatabase, incident_id: str) -> di
     return doc
 
 
+async def _resolve_site(db: AsyncIOMotorDatabase, site_id: str | None, site_other: str | None) -> dict:
+    """Resolve a reporter's site choice into what actually gets stored on
+    the incident: `site_location` (display name), `site_code` (incident
+    numbering prefix), and `site_id` (None for a one-off "Other" site).
+
+    A registered site (site_id given) must exist and be active — an
+    inactive site was presumably retired for a reason, so new reports
+    shouldn't be filed against it even if a stale client still has its id
+    cached. "Other" sites all share the OTHER_SITE_CODE numbering prefix
+    (see app/numbering.py) rather than deriving one from free text.
+    """
+    if site_id:
+        if not ObjectId.is_valid(site_id):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid site.")
+        site = await db["sites"].find_one({"_id": ObjectId(site_id)})
+        if site is None or not site.get("is_active", True):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, "Selected site is not available. Choose another, or use 'Other'."
+            )
+        return {"site_id": str(site["_id"]), "site_location": site["name"], "site_code": site["code"]}
+
+    other = (site_other or "").strip()
+    if not other:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Choose a site from the list, or specify one under 'Other'.")
+    return {"site_id": None, "site_location": other, "site_code": OTHER_SITE_CODE}
+
+
 def _json_safe(value):
     """Recursively convert date/time/Enum values to BSON-friendly types.
 
@@ -95,10 +124,18 @@ async def create_incident(
     current_user: UserPublic = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ) -> dict:
+    data = payload.model_dump()
+    site_id_in = data.pop("site_id", None)
+    site_other_in = data.pop("site_other", None)
+    site_info = await _resolve_site(db, site_id_in, site_other_in)
+    incident_number = await next_incident_number(db, site_info["site_code"], payload.incident_date.year)
+
     now = utcnow()
-    doc = _json_safe(payload.model_dump())
+    doc = _json_safe(data)
     doc.update(
         {
+            **site_info,
+            "incident_number": incident_number,
             "status": Status.REPORTED.value,
             "incident_pictures": [],
             "supporting_document_files": [],
@@ -128,6 +165,10 @@ async def list_incidents(
     nature_of_report: NatureOfReport | None = Query(default=None),
     category: IncidentCategory | None = Query(default=None),
     site_location: str | None = Query(default=None, description="Exact match on site/location"),
+    site_id: str | None = Query(default=None, description="Filter by a registered Site's id"),
+    incident_number: str | None = Query(
+        default=None, description="Filter by incident number — exact match, or a leading prefix (e.g. 'JAW-2026')"
+    ),
     search: str | None = Query(default=None, description="Full-text search over the narrative sections"),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
@@ -141,6 +182,10 @@ async def list_incidents(
         query["incident_categories"] = category.value
     if site_location:
         query["site_location"] = site_location
+    if site_id:
+        query["site_id"] = site_id
+    if incident_number:
+        query["incident_number"] = {"$regex": f"^{re.escape(incident_number.strip())}", "$options": "i"}
     if search:
         query["$text"] = {"$search": search}
 
@@ -173,6 +218,15 @@ async def update_incident(
     updates = _json_safe(payload.model_dump(exclude_unset=True))
     if not updates:
         return incident_to_response(existing)
+
+    # incident_number is assigned once, at creation, and never changes —
+    # but the site itself can be corrected/reassigned later. Resolve it the
+    # same way create_incident does, only when the caller actually sent a
+    # site_id/site_other change.
+    if "site_id" in updates or "site_other" in updates:
+        site_id_in = updates.pop("site_id", None)
+        site_other_in = updates.pop("site_other", None)
+        updates.update(await _resolve_site(db, site_id_in, site_other_in))
 
     # Enforce the sign-off hierarchy, and bind the signer's name/position to
     # who is actually logged in rather than trusting client-supplied text —

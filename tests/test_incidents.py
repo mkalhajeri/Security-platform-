@@ -30,7 +30,7 @@ async def test_create_incident(client):
 
 
 async def test_create_incident_requires_core_fields(client):
-    resp = await client.post("/incidents", json={"site_location": "Only this"})
+    resp = await client.post("/incidents", json={"site_other": "Only this"})
     assert resp.status_code == 422
 
 
@@ -52,8 +52,8 @@ async def test_get_incident_invalid_id(client):
 
 
 async def test_list_incidents_with_filters(client):
-    await _create_incident(client, site_location="Site A", incident_categories=["theft"])
-    await _create_incident(client, site_location="Site B", incident_categories=["fire_explosion"])
+    await _create_incident(client, site_other="Site A", incident_categories=["theft"])
+    await _create_incident(client, site_other="Site B", incident_categories=["fire_explosion"])
 
     resp = await client.get("/incidents", params={"category": "fire_explosion"})
     assert resp.status_code == 200

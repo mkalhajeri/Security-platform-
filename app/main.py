@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from app.auth import ensure_bootstrap_admin
 from app.config import get_settings
 from app.database import close_mongo_connection, connect_to_mongo, database
-from app.routers import analytics, auth, health, incidents, users
+from app.routers import analytics, auth, health, incidents, sites, users
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -47,6 +47,7 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(auth.router)
 app.include_router(users.router)
+app.include_router(sites.router)
 app.include_router(incidents.router)
 app.include_router(analytics.router)
 

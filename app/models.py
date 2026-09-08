@@ -171,7 +171,19 @@ class AttachmentMeta(BaseModel):
 
 class IncidentCreate(BaseModel):
     # Section 1: Reporting Details
-    site_location: str = Field(..., min_length=1, max_length=200)
+    #
+    # "Site" is the organization's own named facility (e.g. a warehouse or
+    # yard) — chosen from the managed Sites registry (see app/site_models.py)
+    # so incident numbers and per-site analytics stay accurate. It is
+    # distinct from `exact_location` below, which describes where *within*
+    # that site the incident happened. Pick one: `site_id` references a
+    # registered site; `site_other` is free text for a site not in the
+    # list. The server resolves whichever is given into the stored
+    # `site_location`/`site_code` (see `_resolve_site` in routers/incidents.py).
+    site_id: str | None = Field(default=None, description="Registered Site's id; omit and use site_other instead")
+    site_other: str | None = Field(
+        default=None, max_length=200, description="Free-text site name, required when site_id is omitted"
+    )
     department_area: str | None = Field(default=None, max_length=200)
     report_date: date
     report_time: time
@@ -215,7 +227,8 @@ class IncidentCreate(BaseModel):
 class IncidentUpdate(BaseModel):
     """All fields optional — only provided fields are changed."""
 
-    site_location: str | None = Field(default=None, min_length=1, max_length=200)
+    site_id: str | None = None
+    site_other: str | None = Field(default=None, max_length=200)
     department_area: str | None = Field(default=None, max_length=200)
     report_date: date | None = None
     report_time: time | None = None
@@ -257,6 +270,11 @@ class IncidentResponse(BaseModel):
     id: str
     status: Status
 
+    incident_number: str = Field(
+        ..., description="Site + year document number, e.g. 'JAW-2026-0001' (assigned once, at creation)."
+    )
+    site_id: str | None = Field(default=None, description="Registered Site's id, or null if filed under 'Other'.")
+    site_code: str = Field(..., description="Numbering prefix used for this incident's site (e.g. 'JAW', or 'OTH').")
     site_location: str
     department_area: str | None = None
     report_date: date

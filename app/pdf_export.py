@@ -274,15 +274,15 @@ def build_incident_pdf(incident: dict, picture_bytes: dict[str, bytes]) -> bytes
         bottomMargin=15 * mm,
         leftMargin=15 * mm,
         rightMargin=15 * mm,
-        title=f"Security Incident Report — {incident.get('site_location', '')}",
+        title=f"Security Incident Report {incident.get('incident_number', '')} — {incident.get('site_location', '')}",
     )
 
     story = []
     story.append(Paragraph("SECURITY INCIDENT REPORT", styles.title))
     story.append(
         Paragraph(
-            f"{_fmt(incident.get('site_location'))} · Filed {_fmt(incident.get('report_date'))} · "
-            f"Status: {_humanize(incident.get('status')).title()}",
+            f"No. {_fmt(incident.get('incident_number'))} · {_fmt(incident.get('site_location'))} · "
+            f"Filed {_fmt(incident.get('report_date'))} · Status: {_humanize(incident.get('status')).title()}",
             styles.subtitle,
         )
     )
@@ -293,6 +293,7 @@ def build_incident_pdf(incident: dict, picture_bytes: dict[str, bytes]) -> bytes
         _key_value_grid(
             styles,
             [
+                ("Incident No.", incident.get("incident_number")),
                 ("Site / Location", incident.get("site_location")),
                 ("Department / Area", incident.get("department_area")),
                 ("Report Date", incident.get("report_date")),
